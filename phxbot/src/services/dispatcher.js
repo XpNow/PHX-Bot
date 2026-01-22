@@ -144,6 +144,71 @@ function buildWarnEmbed({ orgName, orgRoleId, reason, dreptPlata, sanctiune, exp
   return emb;
 }
 
+function getOrgRank(member, org) {
+  if (!member || !org) return "NONE";
+  if (org.leader_role_id && member.roles.cache.has(org.leader_role_id)) return "LEADER";
+  if (org.co_leader_role_id && member.roles.cache.has(org.co_leader_role_id)) return "COLEADER";
+  if (org.member_role_id && member.roles.cache.has(org.member_role_id)) return "MEMBER";
+  return "NONE";
+}
+
+function roleCheck(ctx, roleId, label) {
+  if (!roleId) return { ok: false, msg: `Rolul ${label} nu este setat.` };
+  const role = ctx.guild.roles.cache.get(roleId);
+  if (!role) return { ok: false, msg: `Rolul ${label} nu a fost găsit în guild.` };
+  const botMember = ctx.guild.members.me;
+  if (!botMember) return { ok: false, msg: "Nu pot valida ierarhia rolurilor botului." };
+  if (botMember.roles.highest.position <= role.position) {
+    return { ok: false, msg: `Botul nu are ierarhie pentru rolul ${label} (trebuie să fie deasupra).` };
+  }
+  return { ok: true, role };
+}
+
+function canManageTargetRank(ctx, org, targetMember) {
+  if (ctx.perms.staff) return { ok: true };
+  const actorRank = getOrgRank(ctx.member, org);
+  const targetRank = getOrgRank(targetMember, org);
+
+  if (actorRank === "LEADER") {
+    if (targetRank === "LEADER") return { ok: false, msg: "Nu poți modifica liderul organizației." };
+    return { ok: true };
+  }
+  if (actorRank === "COLEADER") {
+    if (targetRank !== "MEMBER") return { ok: false, msg: "Nu poți modifica liderul sau co-liderul." };
+    return { ok: true };
+  }
+  return { ok: false, msg: "Nu ai permisiuni în această organizație." };
+}
+
+function canSetRank(ctx, org, desiredRank, targetMember) {
+  if (!["LEADER", "COLEADER", "MEMBER"].includes(desiredRank)) {
+    return { ok: false, msg: "Rank invalid (LEADER/COLEADER/MEMBER)." };
+  }
+  if (desiredRank === "LEADER" && !ctx.perms.staff) {
+    return { ok: false, msg: "Doar staff poate seta liderul organizației." };
+  }
+  if (desiredRank === "COLEADER") {
+    if (!org.co_leader_role_id) return { ok: false, msg: "Rolul de Co-Leader nu este setat pentru această organizație." };
+    const actorRank = getOrgRank(ctx.member, org);
+    if (!ctx.perms.staff && actorRank !== "LEADER") {
+      return { ok: false, msg: "Doar liderul poate seta Co-Leader." };
+    }
+  }
+  if (desiredRank === "MEMBER") {
+    const targetRank = getOrgRank(targetMember, org);
+    if (targetRank === "LEADER" && !ctx.perms.staff) {
+      return { ok: false, msg: "Nu poți retrograda liderul organizației." };
+    }
+    if (targetRank === "COLEADER") {
+      const actorRank = getOrgRank(ctx.member, org);
+      if (!ctx.perms.staff && actorRank !== "LEADER") {
+        return { ok: false, msg: "Doar liderul poate retrograda Co-Leader." };
+      }
+    }
+  }
+  return { ok: true };
+}
+
 async function safeRoleAdd(member, roleId, context) {
   if (!roleId) return false;
   try {
@@ -262,18 +327,21 @@ async function orgPanelView(interaction, ctx, orgId) {
     `Tip: **${humanKind(org.kind)}**\nMembri înregistrați (DB): **${counts}**\n\nAlege o acțiune:`
   );
 
+  const actorRank = getOrgRank(ctx.member, org);
+  const canSetRanks = ctx.perms.staff || actorRank === "LEADER";
   const buttons = [
     btn(`org:${orgId}:remove_pk`, "Remove (PK)", ButtonStyle.Danger, "💀"),
     btn(`org:${orgId}:add`, "Add membru", ButtonStyle.Success, "➕"),
     btn(`org:${orgId}:remove`, "Remove membru", ButtonStyle.Secondary, "➖"),
     btn(`org:${orgId}:roster`, "Roster", ButtonStyle.Secondary, "📋"),
     btn(`org:${orgId}:search`, "Search", ButtonStyle.Secondary, "🔎"),
+    canSetRanks ? btn(`org:${orgId}:setrank`, "Set rank", ButtonStyle.Secondary, "🪪") : null,
     btn(`org:${orgId}:cooldowns`, "Cooldowns", ButtonStyle.Secondary, "⏳"),
     btn(`org:${orgId}:sticky`, "Sticky Panel", ButtonStyle.Secondary, "📌"),
     btn(`fmenu:back`, "Back", ButtonStyle.Secondary, "⬅️"),
   ];
 
-  const rows = rowsFromButtons(buttons);
+  const rows = rowsFromButtons(buttons.filter(Boolean));
   return sendEphemeral(interaction, emb.data.title, emb.data.description, rows);
 }
 
@@ -320,6 +388,41 @@ function configAccessRolesView(ctx) {
     btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️"),
   ];
   return { emb, rows: rowsFromButtons(buttons) };
+}
+
+function configIssues(ctx) {
+  const issues = [];
+  const channelChecks = [
+    ["audit", ctx.settings.audit],
+    ["alert", ctx.settings.alert],
+    ["warn", ctx.settings.warn],
+    ["bot", ctx.settings.botChannel]
+  ];
+  for (const [label, id] of channelChecks) {
+    if (!id) {
+      issues.push(`Canal ${label}: lipsă`);
+      continue;
+    }
+    const channel = ctx.guild.channels.cache.get(id);
+    if (!channel) issues.push(`Canal ${label}: nu a fost găsit`);
+  }
+
+  const roleChecks = [
+    ["admin", ctx.settings.adminRole],
+    ["supervisor", ctx.settings.supervisorRole],
+    ["pk", ctx.settings.pkRole],
+    ["ban", ctx.settings.banRole]
+  ];
+  for (const [label, id] of roleChecks) {
+    if (!id) {
+      issues.push(`Rol ${label}: lipsă`);
+      continue;
+    }
+    const role = ctx.guild.roles.cache.get(id);
+    if (!role) issues.push(`Rol ${label}: nu a fost găsit`);
+  }
+
+  return issues;
 }
 
 function configChannelsView(ctx) {
@@ -371,7 +474,12 @@ async function famenuHome(interaction, ctx) {
 
 async function famenuConfig(interaction, ctx) {
   if (!requireOwner(ctx)) return sendEphemeral(interaction, "⛔ Owner only", "Doar ownerul poate modifica configurările.");
-  const emb = makeEmbed("Config — Sistem", "Setează roluri, canale și rate limit.");
+  const issues = configIssues(ctx);
+  const desc = [
+    "Setează roluri, canale și rate limit.",
+    issues.length ? `\n⚠️ Probleme detectate:\n- ${issues.join("\n- ")}` : "\n✅ Configurarea pare completă."
+  ].join("\n");
+  const emb = makeEmbed("Config — Sistem", desc);
   const buttons = [
     btn("famenu:config:roles", "Roluri de acces", ButtonStyle.Secondary, "🔐"),
     btn("famenu:config:channels", "Canale", ButtonStyle.Secondary, "📣"),
@@ -500,6 +608,13 @@ function searchModal(orgId) {
 function reconcileOrgModal() {
   return modal("famenu:reconcile_org_modal", "Reconcile organizație", [
     input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
+  ]);
+}
+
+function setRankModal(orgId) {
+  return modal(`org:${orgId}:setrank_modal`, "Setează rank", [
+    input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
+    input("rank", "Rank (LEADER/COLEADER/MEMBER)", undefined, true, "Ex: COLEADER")
   ]);
 }
 
@@ -685,6 +800,10 @@ async function applyPk(ctx, targetMember, orgId, byUserId) {
   // remove org member role
   const org = repo.getOrg(ctx.db, orgId);
   if (org) {
+    const canManage = canManageTargetRank(ctx, org, targetMember);
+    if (!canManage.ok) return { ok:false, msg: canManage.msg };
+    const orgRoleCheck = roleCheck(ctx, org.member_role_id, "membru");
+    if (!orgRoleCheck.ok) return { ok:false, msg: orgRoleCheck.msg };
     const removed = await safeRoleRemove(targetMember, org.member_role_id, `PK remove org role for ${targetMember.id}`);
     if (!removed) return { ok:false, msg:"Nu pot elimina rolul organizației (permisiuni lipsă)." };
   } else {
@@ -707,6 +826,10 @@ async function removeFromOrg(ctx, targetMember, orgId, byUserId) {
     console.error(`[REMOVE] Org not found for orgId ${orgId}`);
     return { ok:false, msg:"Organizația nu există." };
   }
+  const canManage = canManageTargetRank(ctx, org, targetMember);
+  if (!canManage.ok) return { ok:false, msg: canManage.msg };
+  const orgRoleCheck = roleCheck(ctx, org.member_role_id, "membru");
+  if (!orgRoleCheck.ok) return { ok:false, msg: orgRoleCheck.msg };
   const removed = await safeRoleRemove(targetMember, org.member_role_id, `Remove org role for ${targetMember.id}`);
   if (!removed) return { ok:false, msg:"Nu pot elimina rolul organizației (permisiuni lipsă)." };
   repo.removeMembership(ctx.db, targetMember.id);
@@ -747,6 +870,8 @@ async function addToOrg(ctx, targetMember, orgId, role) {
   if (ctx.settings.pkRole) await safeRoleRemove(targetMember, ctx.settings.pkRole, `Cleanup PK for ${targetMember.id}`);
   if (ctx.settings.banRole) await safeRoleRemove(targetMember, ctx.settings.banRole, `Cleanup BAN for ${targetMember.id}`);
 
+  const orgRoleCheck = roleCheck(ctx, org.member_role_id, "membru");
+  if (!orgRoleCheck.ok) return { ok:false, msg: orgRoleCheck.msg };
   const added = await safeRoleAdd(targetMember, org.member_role_id, `Add org role for ${targetMember.id}`);
   if (!added) return { ok:false, msg:"Nu pot adăuga rolul organizației (permisiuni lipsă)." };
   repo.upsertMembership(ctx.db, targetMember.id, orgId, role || "MEMBER");
@@ -754,14 +879,68 @@ async function addToOrg(ctx, targetMember, orgId, role) {
   return { ok:true };
 }
 
-async function rosterView(interaction, ctx, orgId) {
+async function setMemberRank(ctx, targetMember, orgId, desiredRank) {
   const org = repo.getOrg(ctx.db, orgId);
-  if (!org) return sendEphemeral(interaction, "Eroare", "Organizația nu există.");
+  if (!org) {
+    console.error(`[RANK] Org not found for orgId ${orgId}`);
+    return { ok:false, msg:"Organizația nu există." };
+  }
+  const rankCheck = canSetRank(ctx, org, desiredRank, targetMember);
+  if (!rankCheck.ok) return { ok:false, msg: rankCheck.msg };
+
+  const memberRoleCheck = roleCheck(ctx, org.member_role_id, "membru");
+  if (!memberRoleCheck.ok) return { ok:false, msg: memberRoleCheck.msg };
+  if (!targetMember.roles.cache.has(org.member_role_id)) {
+    const addedMember = await safeRoleAdd(targetMember, org.member_role_id, `Ensure org role for ${targetMember.id}`);
+    if (!addedMember) return { ok:false, msg:"Nu pot adăuga rolul organizației (permisiuni lipsă)." };
+    repo.upsertMembership(ctx.db, targetMember.id, orgId, "MEMBER");
+  }
+
+  const leaderRoleCheck = org.leader_role_id ? roleCheck(ctx, org.leader_role_id, "leader") : null;
+  const coLeaderRoleCheck = org.co_leader_role_id ? roleCheck(ctx, org.co_leader_role_id, "co-leader") : null;
+  if (org.leader_role_id && !leaderRoleCheck?.ok) return { ok:false, msg: leaderRoleCheck.msg };
+  if (org.co_leader_role_id && !coLeaderRoleCheck?.ok) return { ok:false, msg: coLeaderRoleCheck.msg };
+
+  if (desiredRank === "LEADER") {
+    if (org.co_leader_role_id) {
+      await safeRoleRemove(targetMember, org.co_leader_role_id, `Unset co-leader for ${targetMember.id}`);
+    }
+    const added = await safeRoleAdd(targetMember, org.leader_role_id, `Set leader for ${targetMember.id}`);
+    if (!added) return { ok:false, msg:"Nu pot seta rolul de Leader (permisiuni lipsă)." };
+  } else if (desiredRank === "COLEADER") {
+    if (!org.co_leader_role_id) return { ok:false, msg:"Rolul de Co-Leader nu este setat." };
+    if (org.leader_role_id) {
+      await safeRoleRemove(targetMember, org.leader_role_id, `Unset leader for ${targetMember.id}`);
+    }
+    const added = await safeRoleAdd(targetMember, org.co_leader_role_id, `Set co-leader for ${targetMember.id}`);
+    if (!added) return { ok:false, msg:"Nu pot seta rolul de Co-Leader (permisiuni lipsă)." };
+  } else {
+    if (org.leader_role_id) {
+      await safeRoleRemove(targetMember, org.leader_role_id, `Unset leader for ${targetMember.id}`);
+    }
+    if (org.co_leader_role_id) {
+      await safeRoleRemove(targetMember, org.co_leader_role_id, `Unset co-leader for ${targetMember.id}`);
+    }
+  }
+
+  await audit(ctx, "Update rank", `User: <@${targetMember.id}> | Org: **${org.name}** | Rank: **${desiredRank}** | De: <@${ctx.uid}>`);
+  return { ok:true };
+}
+
+async function rosterView(interaction, ctx, orgId, useEditReply = false) {
+  const org = repo.getOrg(ctx.db, orgId);
+  if (!org) {
+    const emb = makeEmbed("Eroare", "Organizația nu există.");
+    return useEditReply ? interaction.editReply({ embeds: [emb] }) : sendEphemeral(interaction, emb.data.title, emb.data.description);
+  }
   const members = await ctx.guild.members.fetch().catch((err)=> {
     console.error("[ROSTER] fetch members failed:", err);
     return null;
   });
-  if (!members) return sendEphemeral(interaction, "Eroare", "Nu pot prelua membrii guild-ului.");
+  if (!members) {
+    const emb = makeEmbed("Eroare", "Nu pot prelua membrii guild-ului.");
+    return useEditReply ? interaction.editReply({ embeds: [emb] }) : sendEphemeral(interaction, emb.data.title, emb.data.description);
+  }
   const leaderRole = org.leader_role_id ? ctx.guild.roles.cache.get(org.leader_role_id) : null;
   const coLeaderRole = org.co_leader_role_id ? ctx.guild.roles.cache.get(org.co_leader_role_id) : null;
   const memberRole = org.member_role_id ? ctx.guild.roles.cache.get(org.member_role_id) : null;
@@ -781,6 +960,9 @@ async function rosterView(interaction, ctx, orgId) {
   const desc = shown.length ? `${shown.join("\n")}${extra}` : "Nu există membri în organizație.";
   const emb = makeEmbed(`Roster — ${org.name}`, desc);
   const buttons = [btn(`org:${orgId}:back`, "Back", ButtonStyle.Secondary, "⬅️")];
+  if (useEditReply) {
+    return interaction.editReply({ embeds: [emb], components: rowsFromButtons(buttons) });
+  }
   return sendEphemeral(interaction, emb.data.title, emb.data.description, rowsFromButtons(buttons));
 }
 
@@ -851,6 +1033,14 @@ async function handleModal(interaction, ctx) {
     if (!name || !member_role_id || !leader_role_id) {
       return sendEphemeral(interaction, "Eroare", "Completează câmpurile obligatorii (Name, Member Role ID, Leader Role ID).");
     }
+    const memberCheck = roleCheck(ctx, member_role_id, "membru");
+    if (!memberCheck.ok) return sendEphemeral(interaction, "Eroare", memberCheck.msg);
+    const leaderCheck = roleCheck(ctx, leader_role_id, "leader");
+    if (!leaderCheck.ok) return sendEphemeral(interaction, "Eroare", leaderCheck.msg);
+    if (co_leader_role_id) {
+      const coCheck = roleCheck(ctx, co_leader_role_id, "co-leader");
+      if (!coCheck.ok) return sendEphemeral(interaction, "Eroare", coCheck.msg);
+    }
     const orgId = repo.createOrg(ctx.db, { name, kind, member_role_id, leader_role_id, co_leader_role_id: co_leader_role_id || null });
     await audit(ctx, "Create organizatie", `Org: **${name}** (${humanKind(kind)}) | ID: \`${orgId}\` | De: <@${ctx.uid}>`);
     return sendEphemeral(interaction, "Creat", `Organizația **${name}** a fost creată. (ID: \`${orgId}\`)`);
@@ -868,6 +1058,8 @@ async function handleModal(interaction, ctx) {
     };
     const key = map[which];
     if (!key || !roleId) return sendEphemeral(interaction, "Eroare", "Role ID invalid.");
+    const check = roleCheck(ctx, roleId, which);
+    if (!check.ok) return sendEphemeral(interaction, "Eroare", check.msg);
     setSetting(ctx.db, key, roleId);
     await audit(ctx, "Config update", `Set **${key}** = \`${roleId}\` | De: <@${ctx.uid}>`);
     return sendEphemeral(interaction, "Salvat", "Rolul a fost setat.");
@@ -880,6 +1072,8 @@ async function handleModal(interaction, ctx) {
     const map = { audit: "audit_channel_id", alert: "alert_channel_id", warn: "warn_channel_id", bot: "bot_channel_id" };
     const key = map[which];
     if (!key || !channelId) return sendEphemeral(interaction, "Eroare", "Channel ID invalid.");
+    const channel = ctx.guild.channels.cache.get(channelId);
+    if (!channel || !channel.isTextBased()) return sendEphemeral(interaction, "Eroare", "Canal invalid sau nu este text.");
     setSetting(ctx.db, key, channelId);
     await audit(ctx, "Config update", `Set **${key}** = \`${channelId}\` | De: <@${ctx.uid}>`);
     return sendEphemeral(interaction, "Salvat", "Canalul a fost setat.");
@@ -1141,6 +1335,23 @@ async function handleModal(interaction, ctx) {
     return searchResult(interaction, ctx, orgId, user);
   }
 
+  if (id.endsWith(":setrank_modal")) {
+    const orgId = Number(id.split(":")[1]);
+    const user = parseUserIds(interaction.fields.getTextInputValue("user"))[0];
+    const rankRaw = interaction.fields.getTextInputValue("rank")?.trim().toUpperCase();
+    if (!user) return sendEphemeral(interaction, "Eroare", "User ID invalid.");
+    if (!rankRaw) return sendEphemeral(interaction, "Eroare", "Rank invalid.");
+    await interaction.deferReply({ ephemeral: true });
+    const member = await ctx.guild.members.fetch(user).catch((err) => {
+      console.error(`[RANK] fetch member failed for ${user}:`, err);
+      return null;
+    });
+    if (!member) return interaction.editReply({ embeds: [makeEmbed("Eroare", "Nu pot găsi userul în guild.")] });
+    const res = await setMemberRank(ctx, member, orgId, rankRaw);
+    if (!res.ok) return interaction.editReply({ embeds: [makeEmbed("Eroare", res.msg || "Setarea rank-ului a eșuat.")] });
+    return interaction.editReply({ embeds: [makeEmbed("Rank actualizat", `User: <@${user}> | Rank: **${rankRaw}**`)] });
+  }
+
   return sendEphemeral(interaction, "Eroare", "Modal necunoscut.");
 }
 
@@ -1296,10 +1507,13 @@ async function handleComponent(interaction, ctx) {
     if (action === "add") return showModalSafe(interaction, addMembersModal(orgId));
     if (action === "remove") return showModalSafe(interaction, removeMembersModal(orgId, false));
     if (action === "remove_pk") return showModalSafe(interaction, removeMembersModal(orgId, true));
-    if (action === "roster") return rosterView(interaction, ctx, orgId);
+    if (action === "roster") {
+      await interaction.deferReply({ ephemeral: true });
+      return rosterView(interaction, ctx, orgId, true);
+    }
     if (action === "cooldowns") return cooldownsView(interaction, ctx, orgId);
     if (action === "search") return showModalSafe(interaction, searchModal(orgId));
-    if (action === "sticky") return stickyPanel(interaction, ctx, orgId);
+    if (action === "setrank") return showModalSafe(interaction, setRankModal(orgId));
   }
 
   return sendEphemeral(interaction, "Eroare", "Acțiune necunoscută.");
