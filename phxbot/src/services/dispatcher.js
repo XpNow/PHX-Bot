@@ -429,7 +429,7 @@ function warnsView(ctx) {
   return { emb, rows: rowsFromButtons(buttons) };
 }
 
-function cooldownsView(ctx) {
+function cooldownsAdminView(ctx) {
   const emb = makeEmbed("⏳ Cooldowns", "Gestionează cooldown-uri pentru orice player (Supervisor/Owner).");
   const buttons = [
     btn("famenu:cooldown_add", "Adaugă cooldown", ButtonStyle.Primary, "➕"),
@@ -1185,7 +1185,7 @@ async function handleComponent(interaction, ctx) {
   }
   if (id === "famenu:cooldowns") {
     if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona cooldown-uri.");
-    const view = cooldownsView(ctx);
+    const view = cooldownsAdminView(ctx);
     return sendEphemeral(interaction, view.emb.data.title, view.emb.data.description, view.rows);
   }
 
