@@ -8,6 +8,7 @@ import { openDb, ensureSchema, getSetting, setSetting, getGlobal, setGlobal } fr
 import * as repo from "../db/repo.js";
 import { isOwner, hasRole, parseUserIds, humanKind } from "../util/access.js";
 import { makeEmbed, btn, rowsFromButtons, safeComponents, select, modal, input } from "../ui/ui.js";
+import { COLORS } from "../ui/theme.js";
 
 const PK_MS = 3 * 24 * 60 * 60 * 1000;
 const ALERT_COOLDOWN_MS = 30 * 60 * 1000;
@@ -135,13 +136,29 @@ function buildWarnEmbed({ orgName, orgRoleId, reason, dreptPlata, sanctiune, exp
     `Organizație: ${orgRoleId ? `<@&${orgRoleId}>` : (orgName || "—")}`,
     `Motiv: ${reason || "—"}`,
     `DREPT PLATA: ${dreptPlata ? "DA" : "NU"}`,
-    `SANCTIUNEA OFERITA: ${sanctiune || "—"}`,
+    `SANCTIUNEA OFERITA: ${sanctiune || "—"} ✅`,
     `Expiră: ${expiresAt ? formatTs(expiresAt) : "—"}`,
-    `TOTAL WARN: ${totalWarn}`
+    `TOTAL WARN: ${totalWarn}`,
+    "Status: ✅ VALIDĂ"
   ];
   const emb = makeEmbed("⚠️ WARN", lines.join("\n"));
   if (warnId) emb.setFooter({ text: `WARN ID: ${warnId}` });
   return emb;
+}
+
+function generateWarnId() {
+  return crypto.randomBytes(4).toString("hex").toUpperCase();
+}
+
+function setWarnStatusLine(description, statusLine) {
+  const lines = description ? description.split("\n") : [];
+  const idx = lines.findIndex(line => line.startsWith("Status:"));
+  if (idx >= 0) {
+    lines[idx] = statusLine;
+  } else {
+    lines.push(statusLine);
+  }
+  return lines.join("\n");
 }
 
 function getOrgRank(member, org) {
@@ -1162,7 +1179,7 @@ async function handleModal(interaction, ctx) {
     if (!ctx.settings.warn) return sendEphemeral(interaction, "Config lipsă", "Warn channel nu este setat în /famenu → Config → Canale.");
 
     await interaction.deferReply({ ephemeral: true });
-    const warnId = crypto.randomUUID();
+    const warnId = generateWarnId();
     const createdAt = now();
     const expiresAt = createdAt + 90 * 24 * 60 * 60 * 1000;
     const org = repo.getOrg(ctx.db, orgId);
@@ -1231,8 +1248,11 @@ async function handleModal(interaction, ctx) {
         const msg = await ch.messages.fetch(warn.message_id).catch(()=>null);
         if (msg) {
           const embed = msg.embeds?.[0];
-          const eb = new EmbedBuilder(embed?.data ?? {})
-            .setFooter({ text: `STATUS: REMOVED • ${reason || "fără motiv"}` });
+          const eb = new EmbedBuilder(embed?.data ?? {});
+          const nextDesc = setWarnStatusLine(eb.data.description || "", "Status: ✅ ȘTEARSĂ");
+          eb.setDescription(nextDesc)
+            .setColor(COLORS.ERROR)
+            .setFooter({ text: `ȘTERS • ${reason || "fără motiv"}` });
           await msg.edit({ embeds: [eb] }).catch((err)=> {
             console.error("[WARN] edit message failed:", err);
           });
@@ -1251,6 +1271,10 @@ async function handleModal(interaction, ctx) {
     const durationRaw = interaction.fields.getTextInputValue("duration")?.trim();
     if (!userId) return sendEphemeral(interaction, "Eroare", "User ID invalid.");
     if (!["PK", "BAN"].includes(kindRaw)) return sendEphemeral(interaction, "Eroare", "Tip invalid (PK/BAN).");
+    const existing = repo.getCooldown(ctx.db, userId, kindRaw);
+    if (existing && existing.expires_at > now()) {
+      return sendEphemeral(interaction, "Eroare", "Userul are deja un cooldown activ pentru acest tip.");
+    }
     const roleId = kindRaw === "PK" ? ctx.settings.pkRole : ctx.settings.banRole;
     if (!roleId) return sendEphemeral(interaction, "Config lipsă", `Rolul ${kindRaw} nu este setat în /famenu → Config → Roluri.`);
     const roleCheckRes = roleCheck(ctx, roleId, kindRaw.toLowerCase());
