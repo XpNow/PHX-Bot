@@ -426,11 +426,9 @@ function setRateLimitModal() {
   ]);
 }
 
-function warnAddModal(expira90) {
-  const suffix = expira90 ? "yes" : "no";
-  return modal(`famenu:warn_add_modal:${suffix}`, "Adaugă warn", [
+function warnAddModal() {
+  return modal("famenu:warn_add_modal", "Adaugă warn", [
     input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
-    input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
     input("reason", "Motiv", undefined, true, "Ex: 2 Mafii la bătaie"),
     input("drept_plata", "DREPT PLATA (DA/NU)", undefined, true, "DA / NU"),
     input("sanctiune", "SANCTIUNEA OFERITA", undefined, true, "1/3 Mafia Warn")
@@ -447,8 +445,7 @@ function warnRemoveModal() {
 function warnsView(ctx) {
   const emb = makeEmbed("⚠️ Warns", "Adaugă/șterge warn-uri (Supervisor/Owner).");
   const buttons = [
-    btn("famenu:warn_add_90", "Warn 90 zile", ButtonStyle.Primary, "➕"),
-    btn("famenu:warn_add_noexp", "Warn fără expirare", ButtonStyle.Secondary, "➕"),
+    btn("famenu:warn_add", "Adaugă warn", ButtonStyle.Primary, "➕"),
     btn("famenu:warn_remove", "Șterge warn", ButtonStyle.Secondary, "🗑️"),
     btn("famenu:warn_list", "Listă active", ButtonStyle.Secondary, "📋"),
     btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️")
@@ -974,17 +971,14 @@ async function handleModal(interaction, ctx) {
     return interaction.editReply({ embeds: [makeEmbed("Reconcile org", summary)] });
   }
 
-  if (id.startsWith("famenu:warn_add_modal:")) {
+  if (id === "famenu:warn_add_modal") {
     if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona warn-uri.");
     const orgId = Number(interaction.fields.getTextInputValue("org_id")?.trim());
-    const userId = parseUserIds(interaction.fields.getTextInputValue("user"))[0];
     const reason = interaction.fields.getTextInputValue("reason")?.trim();
     const dreptPlataRaw = interaction.fields.getTextInputValue("drept_plata")?.trim();
     const sanctiune = interaction.fields.getTextInputValue("sanctiune")?.trim();
     const dreptPlata = parseYesNo(dreptPlataRaw);
-    const expira90 = id.endsWith(":yes");
     if (!orgId) return sendEphemeral(interaction, "Eroare", "Org ID invalid.");
-    if (!userId) return sendEphemeral(interaction, "Eroare", "User ID invalid.");
     if (!reason) return sendEphemeral(interaction, "Eroare", "Motivul este obligatoriu.");
     if (dreptPlata === null) return sendEphemeral(interaction, "Eroare", "DREPT PLATA trebuie să fie DA/NU.");
     if (!sanctiune) return sendEphemeral(interaction, "Eroare", "Sanctiunea este obligatorie.");
@@ -993,27 +987,26 @@ async function handleModal(interaction, ctx) {
     await interaction.deferReply({ ephemeral: true });
     const warnId = crypto.randomUUID();
     const createdAt = now();
-    const expiresAt = expira90 ? createdAt + 90 * 24 * 60 * 60 * 1000 : null;
+    const expiresAt = createdAt + 90 * 24 * 60 * 60 * 1000;
     const org = repo.getOrg(ctx.db, orgId);
     if (!org) return interaction.editReply({ embeds: [makeEmbed("Eroare", "Org ID invalid.")] });
     const activeWarns = repo.listWarnsByStatus(ctx.db, "ACTIVE", 100).filter(w => {
       try {
         const payload = JSON.parse(w.payload_json || "{}");
-        return payload.user_id === userId && Number(w.org_id) === orgId;
+        return Number(w.org_id) === orgId;
       } catch {
         return false;
       }
     });
     const totalWarn = `${Math.min(activeWarns.length + 1, WARN_MAX)}/${WARN_MAX}`;
     const payload = {
-      user_id: userId,
       org_id: orgId,
       org_name: org.name,
       org_role_id: org.member_role_id,
       reason,
       drept_plata: dreptPlata,
       sanctiune,
-      expira_90: expira90,
+      expira_90: true,
       created_by: ctx.uid,
       total_warn: totalWarn
     };
@@ -1042,8 +1035,8 @@ async function handleModal(interaction, ctx) {
     const msgRes = await sendWarnMessage(ctx, warnEmbed);
     if (!msgRes.ok) return interaction.editReply({ embeds: [makeEmbed("Eroare", msgRes.msg || "Nu pot trimite warn.")] });
     repo.updateWarnMessageId(ctx.db, warnId, msgRes.messageId);
-    await audit(ctx, "Warn add", `Warn ID: \`${warnId}\` | Org: **${org.name}** | User: <@${userId}> | De: <@${ctx.uid}>`);
-    return interaction.editReply({ embeds: [warnEmbed] });
+    await audit(ctx, "Warn add", `Warn ID: \`${warnId}\` | Org: **${org.name}** | De: <@${ctx.uid}> | Expiră: ${formatTs(expiresAt)}`);
+    return interaction.editReply({ embeds: [makeEmbed("Warn creat", `Warn \`${warnId}\` pentru **${org.name}** (expiră ${formatTs(expiresAt)}).`)] });
   }
 
   if (id === "famenu:warn_remove_modal") {
@@ -1253,13 +1246,9 @@ async function handleComponent(interaction, ctx) {
     return showModalSafe(interaction, reconcileOrgModal());
   }
 
-  if (id === "famenu:warn_add_90") {
+  if (id === "famenu:warn_add") {
     if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona warn-uri.");
-    return showModalSafe(interaction, warnAddModal(true));
-  }
-  if (id === "famenu:warn_add_noexp") {
-    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona warn-uri.");
-    return showModalSafe(interaction, warnAddModal(false));
+    return showModalSafe(interaction, warnAddModal());
   }
   if (id === "famenu:warn_remove") {
     if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona warn-uri.");
@@ -1272,9 +1261,9 @@ async function handleComponent(interaction, ctx) {
       ? warns.map(w => {
         let payload = {};
         try { payload = JSON.parse(w.payload_json); } catch {}
-        const userId = payload.user_id ? `<@${payload.user_id}>` : "—";
-        const exp = w.expires_at ? `<t:${Math.floor(w.expires_at/1000)}:R>` : "—";
-        return `• \`${w.warn_id}\` | ${userId} | Expiră: ${exp}`;
+        const orgName = payload.org_name || `Org ${w.org_id || "-"}`;
+        const exp = w.expires_at ? formatTs(w.expires_at) : "—";
+        return `• \`${w.warn_id}\` | **${orgName}** | Expiră: ${exp}`;
       }).join("\n")
       : "Nu există warn-uri active.";
     const emb = makeEmbed("⚠️ Warns active", desc);
