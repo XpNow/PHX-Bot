@@ -71,6 +71,11 @@ export function ensureSchema(db) {
   ensureColumn("orgs", "co_leader_role_id", "co_leader_role_id TEXT");
   ensureColumn("orgs", "member_role_id", "member_role_id TEXT NOT NULL DEFAULT ''");
 
+  const orgCols = db.prepare("PRAGMA table_info(orgs)").all().map(r => r.name);
+  if (orgCols.includes("type")) {
+    db.exec("UPDATE orgs SET kind=type WHERE kind IS NULL OR kind=''");
+  }
+
   // Defaults
   const defaults = [
     ["audit_channel_id", ""],

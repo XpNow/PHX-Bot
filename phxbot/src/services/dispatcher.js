@@ -103,6 +103,24 @@ function parseDurationMs(input) {
   return mult ? n * mult : null;
 }
 
+async function fetchMembersWithRetry(guild, label) {
+  try {
+    return await guild.members.fetch();
+  } catch (err) {
+    const retryMs = Number(err?.retry_after || err?.retryAfter || 0) * 1000;
+    if (retryMs > 0) {
+      console.warn(`[${label}] rate limited, retrying after ${retryMs}ms`);
+      await new Promise(resolve => setTimeout(resolve, retryMs));
+      return guild.members.fetch().catch((retryErr) => {
+        console.error(`[${label}] fetch members failed after retry:`, retryErr);
+        return null;
+      });
+    }
+    console.error(`[${label}] fetch members failed:`, err);
+    return null;
+  }
+}
+
 function formatDaysLeft(expiresAt) {
   if (!expiresAt) return "—";
   const diff = Math.max(0, expiresAt - now());
@@ -939,10 +957,7 @@ async function handleModal(interaction, ctx) {
     const orgId = Number(interaction.fields.getTextInputValue("org_id")?.trim());
     if (!orgId) return sendEphemeral(interaction, "Eroare", "Org ID invalid.");
     await interaction.deferReply({ ephemeral: true });
-    const members = await ctx.guild.members.fetch().catch((err)=> {
-      console.error("[RECONCILE ORG] fetch members failed:", err);
-      return null;
-    });
+    const members = await fetchMembersWithRetry(ctx.guild, "RECONCILE ORG");
     if (!members) return interaction.editReply({ embeds: [makeEmbed("Eroare", "Nu pot prelua membrii guild-ului.")] });
     const res = await reconcileOrg(ctx, orgId, members);
     if (!res.ok) return interaction.editReply({ embeds: [makeEmbed("Eroare", res.msg || "Reconcile eșuat.")] });
@@ -1208,10 +1223,7 @@ async function handleComponent(interaction, ctx) {
   if (id === "famenu:reconcile_global") {
     if (!requireStaff(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar staff poate folosi această acțiune.");
     await interaction.deferReply({ ephemeral: true });
-    const members = await ctx.guild.members.fetch().catch((err)=> {
-      console.error("[RECONCILE GLOBAL] fetch members failed:", err);
-      return null;
-    });
+    const members = await fetchMembersWithRetry(ctx.guild, "RECONCILE GLOBAL");
     if (!members) return interaction.editReply({ embeds: [makeEmbed("Eroare", "Nu pot prelua membrii guild-ului.")] });
     let added = 0;
     let removed = 0;

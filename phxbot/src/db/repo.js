@@ -6,11 +6,32 @@ export function getOrg(db, orgId) {
 }
 export function createOrg(db, { name, kind, member_role_id, leader_role_id, co_leader_role_id }) {
   const now = Date.now();
-  const stmt = db.prepare(`
-    INSERT INTO orgs(name,kind,member_role_id,leader_role_id,co_leader_role_id,created_at)
-    VALUES(?,?,?,?,?,?)
-  `);
-  const res = stmt.run(name, kind, member_role_id, leader_role_id, co_leader_role_id || null, now);
+  const cols = db.prepare("PRAGMA table_info(orgs)").all().map(r => r.name);
+  const hasKind = cols.includes("kind");
+  const hasType = cols.includes("type");
+  let stmt;
+  let res;
+  if (hasKind && hasType) {
+    stmt = db.prepare(`
+      INSERT INTO orgs(name,kind,type,member_role_id,leader_role_id,co_leader_role_id,created_at)
+      VALUES(?,?,?,?,?,?,?)
+    `);
+    res = stmt.run(name, kind, kind, member_role_id, leader_role_id, co_leader_role_id || null, now);
+  } else if (hasKind) {
+    stmt = db.prepare(`
+      INSERT INTO orgs(name,kind,member_role_id,leader_role_id,co_leader_role_id,created_at)
+      VALUES(?,?,?,?,?,?)
+    `);
+    res = stmt.run(name, kind, member_role_id, leader_role_id, co_leader_role_id || null, now);
+  } else if (hasType) {
+    stmt = db.prepare(`
+      INSERT INTO orgs(name,type,member_role_id,leader_role_id,co_leader_role_id,created_at)
+      VALUES(?,?,?,?,?,?)
+    `);
+    res = stmt.run(name, kind, member_role_id, leader_role_id, co_leader_role_id || null, now);
+  } else {
+    throw new Error("Missing orgs schema columns (kind/type).");
+  }
   return res.lastInsertRowid;
 }
 export function deleteOrg(db, orgId) {
