@@ -1,5 +1,6 @@
 import { Client, GatewayIntentBits, Partials } from "discord.js";
 import { handleInteraction } from "./services/dispatcher.js";
+import { runSchedulers } from "./services/scheduler.js";
 import { openDb, ensureSchema, getSetting } from "./db/db.js";
 import * as repo from "./db/repo.js";
 
@@ -19,8 +20,12 @@ const client = new Client({
   partials: [Partials.GuildMember]
 });
 
+const schedulerDb = openDb();
+ensureSchema(schedulerDb);
+
 client.once("ready", () => {
   console.log(`[INDEX] Logged in as ${client.user.tag}`);
+  runSchedulers({ client, db: schedulerDb });
 });
 
 // Anti-evade: when user rejoins, reapply cooldown roles
