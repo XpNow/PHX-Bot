@@ -59,6 +59,18 @@ export function ensureSchema(db) {
   CREATE TABLE IF NOT EXISTS global_state (key TEXT PRIMARY KEY, value TEXT);
   `);
 
+  function ensureColumn(table, column, ddl) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(r => r.name);
+    if (!cols.includes(column)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+    }
+  }
+
+  ensureColumn("orgs", "kind", "kind TEXT NOT NULL DEFAULT 'ILLEGAL'");
+  ensureColumn("orgs", "leader_role_id", "leader_role_id TEXT NOT NULL DEFAULT ''");
+  ensureColumn("orgs", "co_leader_role_id", "co_leader_role_id TEXT");
+  ensureColumn("orgs", "member_role_id", "member_role_id TEXT NOT NULL DEFAULT ''");
+
   // Defaults
   const defaults = [
     ["audit_channel_id", ""],
