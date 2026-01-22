@@ -649,6 +649,11 @@ async function handleFalert(interaction, ctx) {
     const mins = Math.ceil(left / 60000);
     return sendEphemeral(interaction, "⏳ Cooldown global", `Comanda e pe cooldown. Mai încearcă în ~${mins} minute.`);
   }
+  const illegalOrgs = repo.listOrgs(ctx.db).filter(org => org.kind === "ILLEGAL");
+  const hasIllegalRole = illegalOrgs.some(org => hasRole(ctx.member, org.member_role_id));
+  if (!hasIllegalRole && !ctx.perms.staff) {
+    return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar membrii organizațiilor ILLEGAL pot folosi /falert.");
+  }
   // ping in alert channel
   const alertChId = ctx.settings.alert;
   if (!alertChId) return sendEphemeral(interaction, "Config lipsă", "Alert channel nu este setat în /famenu → Config → Canale.");
@@ -658,7 +663,7 @@ async function handleFalert(interaction, ctx) {
   });
   if (!ch || !ch.isTextBased()) return sendEphemeral(interaction, "Eroare", "Nu pot accesa alert channel. Verifică ID-ul/perms.");
 
-  const orgs = repo.listOrgs(ctx.db).filter(org => org.kind === "ILLEGAL");
+  const orgs = illegalOrgs;
   if (!orgs.length) {
     return sendEphemeral(interaction, "Fără organizații ILLEGAL", "Nu există organizații ILLEGAL configurate pentru alertă.");
   }
