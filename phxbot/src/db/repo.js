@@ -34,6 +34,17 @@ export function listMembersByOrg(db, orgId) {
   return db.prepare("SELECT * FROM memberships WHERE org_id=? ORDER BY since_ts DESC").all(orgId);
 }
 
+export function upsertLastOrgState(db, userId, orgId, leftAt, removedBy) {
+  db.prepare(`
+    INSERT INTO last_org_state(user_id, last_org_id, last_left_at, last_removed_by)
+    VALUES(?,?,?,?)
+    ON CONFLICT(user_id) DO UPDATE SET last_org_id=excluded.last_org_id, last_left_at=excluded.last_left_at, last_removed_by=excluded.last_removed_by
+  `).run(userId, orgId, leftAt, removedBy || null);
+}
+export function getLastOrgState(db, userId) {
+  return db.prepare("SELECT * FROM last_org_state WHERE user_id=?").get(userId);
+}
+
 export function upsertCooldown(db, userId, kind, expiresAt, lastOrgId=null, lastLeftAt=null) {
   const now = Date.now();
   db.prepare(`
