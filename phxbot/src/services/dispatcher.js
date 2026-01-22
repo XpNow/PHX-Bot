@@ -36,6 +36,7 @@ function getCtx(interaction) {
     audit: getSetting(db, "audit_channel_id"),
     alert: getSetting(db, "alert_channel_id"),
     warn: getSetting(db, "warn_channel_id"),
+    botChannel: getSetting(db, "bot_channel_id"),
     adminRole: getSetting(db, "admin_role_id"),
     supervisorRole: getSetting(db, "supervisor_role_id"),
     pkRole: getSetting(db, "pk_role_id"),
@@ -74,6 +75,11 @@ async function sendEphemeral(interaction, title, desc, components=[]) {
   const payload = { embeds: [emb], components: safeComponents(components), ephemeral: true };
   if (interaction.deferred || interaction.replied) return interaction.editReply(payload);
   return interaction.reply(payload);
+}
+
+function formatTs(expiresAt) {
+  if (!expiresAt) return "—";
+  return `<t:${Math.floor(expiresAt / 1000)}:f>`;
 }
 
 function parseYesNo(value) {
@@ -325,7 +331,8 @@ function configChannelsView(ctx) {
   const lines = [
     `Audit: ${ctx.settings.audit ? `<#${ctx.settings.audit}>` : "(unset)"}`,
     `Alert: ${ctx.settings.alert ? `<#${ctx.settings.alert}>` : "(unset)"}`,
-    `Warn: ${ctx.settings.warn ? `<#${ctx.settings.warn}>` : "(unset)"}`
+    `Warn: ${ctx.settings.warn ? `<#${ctx.settings.warn}>` : "(unset)"}`,
+    `Bot Channel: ${ctx.settings.botChannel ? `<#${ctx.settings.botChannel}>` : "(unset)"}`
   ];
   emb.setDescription(emb.data.description + "\n\n" + lines.join("\n"));
 
@@ -333,6 +340,7 @@ function configChannelsView(ctx) {
     btn("famenu:setchannel:audit", "Set Audit", ButtonStyle.Secondary),
     btn("famenu:setchannel:alert", "Set Alert", ButtonStyle.Secondary),
     btn("famenu:setchannel:warn", "Set Warn", ButtonStyle.Secondary),
+    btn("famenu:setchannel:bot", "Set Bot Channel", ButtonStyle.Secondary),
     btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️"),
   ];
   return { emb, rows: rowsFromButtons(buttons) };
@@ -418,14 +426,14 @@ function setRateLimitModal() {
   ]);
 }
 
-function warnAddModal() {
-  return modal("famenu:warn_add_modal", "Adaugă warn", [
+function warnAddModal(expira90) {
+  const suffix = expira90 ? "yes" : "no";
+  return modal(`famenu:warn_add_modal:${suffix}`, "Adaugă warn", [
     input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
     input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
     input("reason", "Motiv", undefined, true, "Ex: 2 Mafii la bătaie"),
     input("drept_plata", "DREPT PLATA (DA/NU)", undefined, true, "DA / NU"),
-    input("sanctiune", "SANCTIUNEA OFERITA", undefined, true, "1/3 Mafia Warn"),
-    input("expira_90", "EXPIRA IN 90 ZILE (DA/NU)", undefined, true, "DA / NU")
+    input("sanctiune", "SANCTIUNEA OFERITA", undefined, true, "1/3 Mafia Warn")
   ]);
 }
 
@@ -439,7 +447,8 @@ function warnRemoveModal() {
 function warnsView(ctx) {
   const emb = makeEmbed("⚠️ Warns", "Adaugă/șterge warn-uri (Supervisor/Owner).");
   const buttons = [
-    btn("famenu:warn_add", "Adaugă warn", ButtonStyle.Primary, "➕"),
+    btn("famenu:warn_add_90", "Warn 90 zile", ButtonStyle.Primary, "➕"),
+    btn("famenu:warn_add_noexp", "Warn fără expirare", ButtonStyle.Secondary, "➕"),
     btn("famenu:warn_remove", "Șterge warn", ButtonStyle.Secondary, "🗑️"),
     btn("famenu:warn_list", "Listă active", ButtonStyle.Secondary, "📋"),
     btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️")
@@ -680,7 +689,7 @@ async function reconcileCooldownRoles(ctx, members) {
         repo.upsertCooldown(ctx.db, m.id, "PK", expiresAt, null, nowTs);
         pkMap.set(m.id, { user_id: m.id });
         pkAdded++;
-        await audit(ctx, "Reconcile PK", `User: <@${m.id}> | PK creat (manual role detectat) | Expiră: <t:${Math.floor(expiresAt/1000)}:R> | De: <@${ctx.uid}>`);
+        await audit(ctx, "Reconcile PK", `User: <@${m.id}> | PK creat (manual role detectat) | Expiră: ${formatTs(expiresAt)} | De: <@${ctx.uid}>`);
       }
     }
   }
@@ -693,7 +702,7 @@ async function reconcileCooldownRoles(ctx, members) {
         repo.upsertCooldown(ctx.db, m.id, "BAN", expiresAt, null, nowTs);
         banMap.set(m.id, { user_id: m.id });
         banAdded++;
-        await audit(ctx, "Reconcile BAN", `User: <@${m.id}> | BAN creat (manual role detectat) | Expiră: <t:${Math.floor(expiresAt/1000)}:R> | De: <@${ctx.uid}>`);
+        await audit(ctx, "Reconcile BAN", `User: <@${m.id}> | BAN creat (manual role detectat) | Expiră: ${formatTs(expiresAt)} | De: <@${ctx.uid}>`);
       }
     }
   }
@@ -726,7 +735,7 @@ async function applyPk(ctx, targetMember, orgId, byUserId) {
 
   const addedPk = await safeRoleAdd(targetMember, pkRole, `Apply PK for ${targetMember.id}`);
   if (!addedPk) return { ok:false, msg:"Nu pot aplica rolul PK (permisiuni lipsă)." };
-  await audit(ctx, "Remove (PK)", `User: <@${targetMember.id}> | Org: **${org?.name ?? orgId}** | De: <@${byUserId}> | Expiră: <t:${Math.floor(expiresAt/1000)}:R>`);
+  await audit(ctx, "Remove (PK)", `User: <@${targetMember.id}> | Org: **${org?.name ?? orgId}** | De: <@${byUserId}> | Expiră: ${formatTs(expiresAt)}`);
   return { ok:true };
 }
 
@@ -897,7 +906,7 @@ async function handleModal(interaction, ctx) {
     if (!requireOwner(ctx)) return sendEphemeral(interaction, "⛔ Owner only", "Doar ownerul poate schimba canalele.");
     const which = id.split(":")[2];
     const channelId = interaction.fields.getTextInputValue("channel_id")?.replace(/[<#>]/g,"").trim();
-    const map = { audit: "audit_channel_id", alert: "alert_channel_id", warn: "warn_channel_id" };
+    const map = { audit: "audit_channel_id", alert: "alert_channel_id", warn: "warn_channel_id", bot: "bot_channel_id" };
     const key = map[which];
     if (!key || !channelId) return sendEphemeral(interaction, "Eroare", "Channel ID invalid.");
     setSetting(ctx.db, key, channelId);
@@ -965,22 +974,20 @@ async function handleModal(interaction, ctx) {
     return interaction.editReply({ embeds: [makeEmbed("Reconcile org", summary)] });
   }
 
-  if (id === "famenu:warn_add_modal") {
+  if (id.startsWith("famenu:warn_add_modal:")) {
     if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona warn-uri.");
     const orgId = Number(interaction.fields.getTextInputValue("org_id")?.trim());
     const userId = parseUserIds(interaction.fields.getTextInputValue("user"))[0];
     const reason = interaction.fields.getTextInputValue("reason")?.trim();
     const dreptPlataRaw = interaction.fields.getTextInputValue("drept_plata")?.trim();
     const sanctiune = interaction.fields.getTextInputValue("sanctiune")?.trim();
-    const expira90Raw = interaction.fields.getTextInputValue("expira_90")?.trim();
     const dreptPlata = parseYesNo(dreptPlataRaw);
-    const expira90 = parseYesNo(expira90Raw);
+    const expira90 = id.endsWith(":yes");
     if (!orgId) return sendEphemeral(interaction, "Eroare", "Org ID invalid.");
     if (!userId) return sendEphemeral(interaction, "Eroare", "User ID invalid.");
     if (!reason) return sendEphemeral(interaction, "Eroare", "Motivul este obligatoriu.");
     if (dreptPlata === null) return sendEphemeral(interaction, "Eroare", "DREPT PLATA trebuie să fie DA/NU.");
     if (!sanctiune) return sendEphemeral(interaction, "Eroare", "Sanctiunea este obligatorie.");
-    if (expira90 === null) return sendEphemeral(interaction, "Eroare", "EXPIRA IN 90 ZILE trebuie să fie DA/NU.");
     if (!ctx.settings.warn) return sendEphemeral(interaction, "Config lipsă", "Warn channel nu este setat în /famenu → Config → Canale.");
 
     await interaction.deferReply({ ephemeral: true });
@@ -1086,8 +1093,8 @@ async function handleModal(interaction, ctx) {
         if (!added) return sendEphemeral(interaction, "Eroare", "Nu pot aplica rolul cooldown (permisiuni lipsă).");
       }
     }
-    await audit(ctx, "Cooldown add", `User: <@${userId}> | Tip: **${kindRaw}** | Expiră: <t:${Math.floor(expiresAt/1000)}:R> | De: <@${ctx.uid}>`);
-    return sendEphemeral(interaction, "Cooldown aplicat", `User: <@${userId}> | Tip: **${kindRaw}** | Expiră: <t:${Math.floor(expiresAt/1000)}:R>`);
+    await audit(ctx, "Cooldown add", `User: <@${userId}> | Tip: **${kindRaw}** | Expiră: ${formatTs(expiresAt)} | De: <@${ctx.uid}>`);
+    return sendEphemeral(interaction, "Cooldown aplicat", `User: <@${userId}> | Tip: **${kindRaw}** | Expiră: ${formatTs(expiresAt)}`);
   }
 
   if (id === "famenu:cooldown_remove_modal") {
@@ -1246,9 +1253,13 @@ async function handleComponent(interaction, ctx) {
     return showModalSafe(interaction, reconcileOrgModal());
   }
 
-  if (id === "famenu:warn_add") {
+  if (id === "famenu:warn_add_90") {
     if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona warn-uri.");
-    return showModalSafe(interaction, warnAddModal());
+    return showModalSafe(interaction, warnAddModal(true));
+  }
+  if (id === "famenu:warn_add_noexp") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona warn-uri.");
+    return showModalSafe(interaction, warnAddModal(false));
   }
   if (id === "famenu:warn_remove") {
     if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona warn-uri.");
@@ -1323,6 +1334,10 @@ async function handleComponent(interaction, ctx) {
 
 export async function handleInteraction(interaction, client) {
   const ctx = getCtx(interaction);
+
+  if (ctx.settings.botChannel && interaction.channelId && interaction.channelId !== ctx.settings.botChannel) {
+    return sendEphemeral(interaction, "Canal restricționat", `Folosește botul doar în <#${ctx.settings.botChannel}>.`);
+  }
 
   if (interaction.isChatInputCommand()) {
     if (interaction.commandName === "fmenu") {

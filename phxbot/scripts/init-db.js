@@ -72,6 +72,7 @@ const defaults = [
   ["audit_channel_id", ""],
   ["alert_channel_id", ""],
   ["warn_channel_id", ""],
+  ["bot_channel_id", ""],
   ["admin_role_id", ""],
   ["supervisor_role_id", ""],
   ["pk_role_id", ""],
