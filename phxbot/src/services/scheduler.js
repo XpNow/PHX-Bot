@@ -16,6 +16,20 @@ async function tick({ client, db }) {
   const guild = await client.guilds.fetch(guildId).catch(() => null);
   if (!guild) return;
 
+  const buildWarnEmbed = (payload, warnId, expiresAt) => {
+    const lines = [
+      `Organizație: ${payload?.org_role_id ? `<@&${payload.org_role_id}>` : (payload?.org_name || "—")}`,
+      `Motiv: ${payload?.reason || "—"}`,
+      `DREPT PLATA: ${payload?.drept_plata ? "DA" : "NU"}`,
+      `SANCTIUNEA OFERITA: ${payload?.sanctiune || "—"}`,
+      `Expiră: ${expiresAt ? `<t:${Math.floor(expiresAt/1000)}:f>` : "—"}`,
+      `TOTAL WARN: ${payload?.total_warn || "—"}`
+    ];
+    const emb = new EmbedBuilder().setTitle("⚠️ WARN").setDescription(lines.join("\n"));
+    if (warnId) emb.setFooter({ text: `WARN ID: ${warnId}` });
+    return emb;
+  };
+
   // Expire cooldowns
   const now = Date.now();
   const expCooldowns = listExpiringCooldowns(db, now);
