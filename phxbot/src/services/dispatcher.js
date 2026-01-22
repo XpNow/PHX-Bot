@@ -185,7 +185,13 @@ function canSetRank(ctx, org, desiredRank, targetMember) {
     return { ok: false, msg: "Rank invalid (LEADER/COLEADER/MEMBER)." };
   }
   if (desiredRank === "LEADER" && !ctx.perms.staff) {
-    return { ok: false, msg: "Doar staff poate seta liderul organizației." };
+    if (targetMember?.id === ctx.uid) {
+      return { ok: false, msg: "Nu îți poți seta singur rolul de Leader." };
+    }
+    const actorRank = getOrgRank(ctx.member, org);
+    if (actorRank !== "LEADER") {
+      return { ok: false, msg: "Doar liderul poate alege succesorul." };
+    }
   }
   if (desiredRank === "COLEADER") {
     if (!org.co_leader_role_id) return { ok: false, msg: "Rolul de Co-Leader nu este setat pentru această organizație." };
@@ -1242,17 +1248,18 @@ async function handleModal(interaction, ctx) {
     const durationRaw = interaction.fields.getTextInputValue("duration")?.trim();
     if (!userId) return sendEphemeral(interaction, "Eroare", "User ID invalid.");
     if (!["PK", "BAN"].includes(kindRaw)) return sendEphemeral(interaction, "Eroare", "Tip invalid (PK/BAN).");
+    const roleId = kindRaw === "PK" ? ctx.settings.pkRole : ctx.settings.banRole;
+    if (!roleId) return sendEphemeral(interaction, "Config lipsă", `Rolul ${kindRaw} nu este setat în /famenu → Config → Roluri.`);
+    const roleCheckRes = roleCheck(ctx, roleId, kindRaw.toLowerCase());
+    if (!roleCheckRes.ok) return sendEphemeral(interaction, "Eroare", roleCheckRes.msg);
     const durationMs = parseDurationMs(durationRaw);
     if (!durationMs) return sendEphemeral(interaction, "Eroare", "Durată invalidă (ex: 30s, 10m, 1d, 1y).");
     const expiresAt = now() + durationMs;
     repo.upsertCooldown(ctx.db, userId, kindRaw, expiresAt, null, now());
     const member = await ctx.guild.members.fetch(userId).catch(()=>null);
     if (member) {
-      const roleId = kindRaw === "PK" ? ctx.settings.pkRole : ctx.settings.banRole;
-      if (roleId) {
-        const added = await safeRoleAdd(member, roleId, `Cooldown add ${kindRaw} for ${userId}`);
-        if (!added) return sendEphemeral(interaction, "Eroare", "Nu pot aplica rolul cooldown (permisiuni lipsă).");
-      }
+      const added = await safeRoleAdd(member, roleId, `Cooldown add ${kindRaw} for ${userId}`);
+      if (!added) return sendEphemeral(interaction, "Eroare", "Nu pot aplica rolul cooldown (permisiuni lipsă).");
     }
     await audit(ctx, "Cooldown aplicat", `User: <@${userId}> | Tip: **${kindRaw}** | Expiră: ${formatTs(expiresAt)} | De: <@${ctx.uid}>`);
     return sendEphemeral(interaction, "Cooldown aplicat", `User: <@${userId}> | Tip: **${kindRaw}** | Expiră: ${formatTs(expiresAt)}`);
@@ -1264,13 +1271,18 @@ async function handleModal(interaction, ctx) {
     const kindRaw = interaction.fields.getTextInputValue("kind")?.trim().toUpperCase();
     if (!userId) return sendEphemeral(interaction, "Eroare", "User ID invalid.");
     if (!["PK", "BAN"].includes(kindRaw)) return sendEphemeral(interaction, "Eroare", "Tip invalid (PK/BAN).");
+    const existing = repo.getCooldown(ctx.db, userId, kindRaw);
+    if (!existing || existing.expires_at <= now()) {
+      return sendEphemeral(interaction, "Eroare", "Nu există un cooldown activ pentru acest user.");
+    }
+    const roleId = kindRaw === "PK" ? ctx.settings.pkRole : ctx.settings.banRole;
+    if (!roleId) return sendEphemeral(interaction, "Config lipsă", `Rolul ${kindRaw} nu este setat în /famenu → Config → Roluri.`);
+    const roleCheckRes = roleCheck(ctx, roleId, kindRaw.toLowerCase());
+    if (!roleCheckRes.ok) return sendEphemeral(interaction, "Eroare", roleCheckRes.msg);
     repo.clearCooldown(ctx.db, userId, kindRaw);
     const member = await ctx.guild.members.fetch(userId).catch(()=>null);
     if (member) {
-      const roleId = kindRaw === "PK" ? ctx.settings.pkRole : ctx.settings.banRole;
-      if (roleId) {
-        await safeRoleRemove(member, roleId, `Cooldown remove ${kindRaw} for ${userId}`);
-      }
+      await safeRoleRemove(member, roleId, `Cooldown remove ${kindRaw} for ${userId}`);
     }
     await audit(ctx, "Cooldown șters", `User: <@${userId}> | Tip: **${kindRaw}** | De: <@${ctx.uid}>`);
     return sendEphemeral(interaction, "Cooldown șters", `User: <@${userId}> | Tip: **${kindRaw}**`);
