@@ -269,6 +269,7 @@ async function orgPanelView(interaction, ctx, orgId) {
     btn(`org:${orgId}:roster`, "Roster", ButtonStyle.Secondary, "📋"),
     btn(`org:${orgId}:search`, "Search", ButtonStyle.Secondary, "🔎"),
     btn(`org:${orgId}:cooldowns`, "Cooldowns", ButtonStyle.Secondary, "⏳"),
+    btn(`org:${orgId}:sticky`, "Sticky Panel", ButtonStyle.Secondary, "📌"),
     btn(`fmenu:back`, "Back", ButtonStyle.Secondary, "⬅️"),
   ];
 
@@ -1156,6 +1157,11 @@ async function handleComponent(interaction, ctx) {
 
   if (!interaction.isButton()) return;
 
+  if (id.startsWith("fmenu:open:")) {
+    const orgId = Number(id.split(":")[2]);
+    return orgPanelView(interaction, ctx, orgId);
+  }
+
   if (id === "fmenu:back") return fmenuHome(interaction, ctx);
   if (id === "famenu:back") return famenuHome(interaction, ctx);
 
@@ -1293,6 +1299,7 @@ async function handleComponent(interaction, ctx) {
     if (action === "roster") return rosterView(interaction, ctx, orgId);
     if (action === "cooldowns") return cooldownsView(interaction, ctx, orgId);
     if (action === "search") return showModalSafe(interaction, searchModal(orgId));
+    if (action === "sticky") return stickyPanel(interaction, ctx, orgId);
   }
 
   return sendEphemeral(interaction, "Eroare", "Acțiune necunoscută.");
