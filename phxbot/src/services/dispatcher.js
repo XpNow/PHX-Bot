@@ -11,12 +11,22 @@ import { makeEmbed, btn, rowsFromButtons, safeComponents, select, modal, input }
 
 const PK_MS = 3 * 24 * 60 * 60 * 1000;
 const ALERT_COOLDOWN_MS = 30 * 60 * 1000;
+const WARN_MAX = 3;
 
 function now() { return Date.now(); }
 
+let sharedDb = null;
+
+function getDb() {
+  if (!sharedDb) {
+    sharedDb = openDb();
+    ensureSchema(sharedDb);
+  }
+  return sharedDb;
+}
+
 function getCtx(interaction) {
-  const db = openDb();
-  ensureSchema(db);
+  const db = getDb();
 
   const guild = interaction.guild;
   const member = interaction.member;
@@ -64,6 +74,54 @@ async function sendEphemeral(interaction, title, desc, components=[]) {
   const payload = { embeds: [emb], components: safeComponents(components), ephemeral: true };
   if (interaction.deferred || interaction.replied) return interaction.editReply(payload);
   return interaction.reply(payload);
+}
+
+function parseYesNo(value) {
+  const v = (value || "").trim().toUpperCase();
+  if (["DA", "YES", "Y", "TRUE"].includes(v)) return true;
+  if (["NU", "NO", "N", "FALSE"].includes(v)) return false;
+  return null;
+}
+
+function parseDurationMs(input) {
+  if (!input) return null;
+  const raw = input.trim().toLowerCase();
+  const m = raw.match(/^(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|week|weeks|mo|month|months|y|year|years)$/);
+  if (!m) return null;
+  const n = Number(m[1]);
+  const unit = m[2];
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const mult = {
+    s: 1000, sec: 1000, secs: 1000, second: 1000, seconds: 1000,
+    m: 60 * 1000, min: 60 * 1000, mins: 60 * 1000, minute: 60 * 1000, minutes: 60 * 1000,
+    h: 60 * 60 * 1000, hr: 60 * 60 * 1000, hrs: 60 * 60 * 1000, hour: 60 * 60 * 1000, hours: 60 * 60 * 1000,
+    d: 24 * 60 * 60 * 1000, day: 24 * 60 * 60 * 1000, days: 24 * 60 * 60 * 1000,
+    w: 7 * 24 * 60 * 60 * 1000, week: 7 * 24 * 60 * 60 * 1000, weeks: 7 * 24 * 60 * 60 * 1000,
+    mo: 30 * 24 * 60 * 60 * 1000, month: 30 * 24 * 60 * 60 * 1000, months: 30 * 24 * 60 * 60 * 1000,
+    y: 365 * 24 * 60 * 60 * 1000, year: 365 * 24 * 60 * 60 * 1000, years: 365 * 24 * 60 * 60 * 1000
+  }[unit];
+  return mult ? n * mult : null;
+}
+
+function formatDaysLeft(expiresAt) {
+  if (!expiresAt) return "—";
+  const diff = Math.max(0, expiresAt - now());
+  return `${Math.ceil(diff / (24 * 60 * 60 * 1000))} zile`;
+}
+
+function buildWarnEmbed({ orgName, orgRoleId, reason, dreptPlata, sanctiune, expiresAt, totalWarn, warnId }) {
+  const lines = [
+    `Organizație: ${orgRoleId ? `<@&${orgRoleId}>` : (orgName || "—")}`,
+    `Motiv: ${reason || "—"}`,
+    `DREPT PLATA: ${dreptPlata ? "DA" : "NU"}`,
+    `SANCTIUNEA OFERITA: ${sanctiune || "—"}`,
+    `EXPIRA IN 90 ZILE: ${expiresAt ? "DA" : "NU"}`,
+    `EXPIRĂ ÎN: ${expiresAt ? formatDaysLeft(expiresAt) : "—"}`,
+    `TOTAL WARN: ${totalWarn}`
+  ];
+  const emb = makeEmbed("⚠️ WARN", lines.join("\n"));
+  if (warnId) emb.setFooter({ text: `WARN ID: ${warnId}` });
+  return emb;
 }
 
 async function safeRoleAdd(member, roleId, context) {
@@ -191,6 +249,7 @@ async function orgPanelView(interaction, ctx, orgId) {
     btn(`org:${orgId}:roster`, "Roster", ButtonStyle.Secondary, "📋"),
     btn(`org:${orgId}:search`, "Search", ButtonStyle.Secondary, "🔎"),
     btn(`org:${orgId}:cooldowns`, "Cooldowns", ButtonStyle.Secondary, "⏳"),
+    btn(`org:${orgId}:sticky`, "Sticky Panel", ButtonStyle.Secondary, "📌"),
     btn(`fmenu:back`, "Back", ButtonStyle.Secondary, "⬅️"),
   ];
 
@@ -281,7 +340,8 @@ async function famenuHome(interaction, ctx) {
     btn("famenu:orgs", "Organizații", ButtonStyle.Primary, "🏛️"),
     btn("famenu:config", "Config", ButtonStyle.Secondary, "⚙️"),
     btn("famenu:diag", "Diagnostic", ButtonStyle.Secondary, "🩺"),
-    requireSupervisorOrOwner(ctx) ? btn("famenu:warns", "Warns", ButtonStyle.Secondary, "⚠️") : null
+    requireSupervisorOrOwner(ctx) ? btn("famenu:warns", "Warns", ButtonStyle.Secondary, "⚠️") : null,
+    requireSupervisorOrOwner(ctx) ? btn("famenu:cooldowns", "Cooldowns", ButtonStyle.Secondary, "⏳") : null
   ];
   const rows = rowsFromButtons(buttons.filter(Boolean));
   return sendEphemeral(interaction, emb.data.title, emb.data.description, rows);
@@ -342,9 +402,12 @@ function setRateLimitModal() {
 
 function warnAddModal() {
   return modal("famenu:warn_add_modal", "Adaugă warn", [
+    input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
     input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
-    input("days", "Durata (zile)", undefined, true, "Ex: 7"),
-    input("reason", "Motiv (opțional)", undefined, false, "Ex: abateri")
+    input("reason", "Motiv", undefined, true, "Ex: 2 Mafii la bătaie"),
+    input("drept_plata", "DREPT PLATA (DA/NU)", undefined, true, "DA / NU"),
+    input("sanctiune", "SANCTIUNEA OFERITA", undefined, true, "1/3 Mafia Warn"),
+    input("expira_90", "EXPIRA IN 90 ZILE (DA/NU)", undefined, true, "DA / NU")
   ]);
 }
 
@@ -364,6 +427,31 @@ function warnsView(ctx) {
     btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️")
   ];
   return { emb, rows: rowsFromButtons(buttons) };
+}
+
+function cooldownsView(ctx) {
+  const emb = makeEmbed("⏳ Cooldowns", "Gestionează cooldown-uri pentru orice player (Supervisor/Owner).");
+  const buttons = [
+    btn("famenu:cooldown_add", "Adaugă cooldown", ButtonStyle.Primary, "➕"),
+    btn("famenu:cooldown_remove", "Șterge cooldown", ButtonStyle.Secondary, "🗑️"),
+    btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️")
+  ];
+  return { emb, rows: rowsFromButtons(buttons) };
+}
+
+function cooldownAddModal() {
+  return modal("famenu:cooldown_add_modal", "Adaugă cooldown", [
+    input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
+    input("kind", "Tip (PK/BAN)", undefined, true, "PK sau BAN"),
+    input("duration", "Durată (ex: 30s, 10m, 1d, 1y)", undefined, true, "30s / 10m / 1d")
+  ]);
+}
+
+function cooldownRemoveModal() {
+  return modal("famenu:cooldown_remove_modal", "Șterge cooldown", [
+    input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
+    input("kind", "Tip (PK/BAN)", undefined, true, "PK sau BAN")
+  ]);
 }
 
 function deleteOrgModal() {
@@ -395,6 +483,45 @@ function reconcileOrgModal() {
   ]);
 }
 
+async function stickyPanel(interaction, ctx, orgId) {
+  const org = repo.getOrg(ctx.db, orgId);
+  if (!org) return sendEphemeral(interaction, "Eroare", "Organizația nu există.");
+  const ch = interaction.channel;
+  if (!ch || !ch.isTextBased()) return sendEphemeral(interaction, "Eroare", "Canal invalid pentru sticky panel.");
+
+  const emb = makeEmbed(
+    `📌 ${org.name} — ${humanKind(org.kind)}`,
+    "Apasă butonul de mai jos pentru a deschide meniul organizației."
+  );
+  const openBtn = btn(`fmenu:open:${orgId}`, "Deschide meniu", ButtonStyle.Primary, "📂");
+  const row = new ActionRowBuilder().addComponents(openBtn);
+
+  const key = `sticky_panel_${orgId}`;
+  const stored = getGlobal(ctx.db, key);
+  let msg = null;
+  if (stored) {
+    const [channelId, messageId] = stored.split(":");
+    if (channelId && messageId) {
+      const oldCh = await ctx.guild.channels.fetch(channelId).catch(()=>null);
+      if (oldCh && oldCh.isTextBased()) {
+        msg = await oldCh.messages.fetch(messageId).catch(()=>null);
+      }
+    }
+  }
+  if (msg) {
+    await msg.edit({ embeds: [emb], components: [row] }).catch((err)=> {
+      console.error("[STICKY] edit failed:", err);
+    });
+    return sendEphemeral(interaction, "Sticky Panel", "Panelul a fost actualizat.");
+  }
+  const newMsg = await ch.send({ embeds: [emb], components: [row] }).catch((err)=> {
+    console.error("[STICKY] send failed:", err);
+    return null;
+  });
+  if (!newMsg) return sendEphemeral(interaction, "Eroare", "Nu pot trimite sticky panel în acest canal.");
+  setGlobal(ctx.db, key, `${ch.id}:${newMsg.id}`);
+  return sendEphemeral(interaction, "Sticky Panel", "Panelul a fost postat.");
+}
 async function handleFalert(interaction, ctx) {
   const loc = interaction.options.getString("locatie", true);
   const last = Number(getGlobal(ctx.db, "falert_last_ts") || "0");
@@ -461,7 +588,7 @@ async function reconcileOrg(ctx, orgId, members) {
   return { ok:true, added, removed, org };
 }
 
-async function sendWarnMessage(ctx, userId, warnId, reason, expiresAt) {
+async function sendWarnMessage(ctx, embed) {
   const warnChannelId = ctx.settings.warn;
   if (!warnChannelId) return { ok:false, msg:"Warn channel nu este setat." };
   try {
@@ -470,14 +597,7 @@ async function sendWarnMessage(ctx, userId, warnId, reason, expiresAt) {
       console.error("[WARN] Invalid warn channel:", warnChannelId);
       return { ok:false, msg:"Warn channel invalid." };
     }
-    const desc = [
-      `User: <@${userId}>`,
-      `Motiv: ${reason || "—"}`,
-      `Warn ID: \`${warnId}\``,
-      `Expiră: <t:${Math.floor(expiresAt/1000)}:R>`
-    ].join("\n");
-    const emb = makeEmbed("⚠️ WARN", desc);
-    const msg = await ch.send({ embeds: [emb] });
+    const msg = await ch.send({ embeds: [embed] });
     return { ok:true, messageId: msg.id };
   } catch (err) {
     console.error("[WARN] send failed:", err);
@@ -644,11 +764,24 @@ async function rosterView(interaction, ctx, orgId) {
     return null;
   });
   if (!members) return sendEphemeral(interaction, "Eroare", "Nu pot prelua membrii guild-ului.");
-  let count = 0;
-  if (members) {
-    count = members.filter(m => m.roles.cache.has(org.member_role_id)).size;
+  const leaderRole = org.leader_role_id ? ctx.guild.roles.cache.get(org.leader_role_id) : null;
+  const coLeaderRole = org.co_leader_role_id ? ctx.guild.roles.cache.get(org.co_leader_role_id) : null;
+  const memberRole = org.member_role_id ? ctx.guild.roles.cache.get(org.member_role_id) : null;
+  const orgMembers = members.filter(m => m.roles.cache.has(org.member_role_id));
+
+  const entries = [];
+  for (const m of orgMembers.values()) {
+    let label = memberRole?.name || "Membru";
+    if (org.leader_role_id && m.roles.cache.has(org.leader_role_id)) label = leaderRole?.name || "Leader";
+    else if (org.co_leader_role_id && m.roles.cache.has(org.co_leader_role_id)) label = coLeaderRole?.name || "Co-Leader";
+    entries.push({ id: m.id, label, order: label === (leaderRole?.name || "Leader") ? 0 : label === (coLeaderRole?.name || "Co-Leader") ? 1 : 2 });
   }
-  const emb = makeEmbed(`📋 Roster — ${org.name}`, `Membri cu rolul organizației: **${count}**`);
+  entries.sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
+  const lines = entries.map(e => `• <@${e.id}> — **${e.label}**`);
+  const shown = lines.slice(0, 50);
+  const extra = lines.length > 50 ? `\n... și încă ${lines.length - 50} membri` : "";
+  const desc = shown.length ? `${shown.join("\n")}${extra}` : "Nu există membri în organizație.";
+  const emb = makeEmbed(`📋 Roster — ${org.name}`, desc);
   const buttons = [btn(`org:${orgId}:back`, "Back", ButtonStyle.Secondary, "⬅️")];
   return sendEphemeral(interaction, emb.data.title, emb.data.description, rowsFromButtons(buttons));
 }
@@ -819,23 +952,53 @@ async function handleModal(interaction, ctx) {
 
   if (id === "famenu:warn_add_modal") {
     if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona warn-uri.");
+    const orgId = Number(interaction.fields.getTextInputValue("org_id")?.trim());
     const userId = parseUserIds(interaction.fields.getTextInputValue("user"))[0];
-    const daysRaw = interaction.fields.getTextInputValue("days")?.trim();
     const reason = interaction.fields.getTextInputValue("reason")?.trim();
-    const days = Number(daysRaw);
+    const dreptPlataRaw = interaction.fields.getTextInputValue("drept_plata")?.trim();
+    const sanctiune = interaction.fields.getTextInputValue("sanctiune")?.trim();
+    const expira90Raw = interaction.fields.getTextInputValue("expira_90")?.trim();
+    const dreptPlata = parseYesNo(dreptPlataRaw);
+    const expira90 = parseYesNo(expira90Raw);
+    if (!orgId) return sendEphemeral(interaction, "Eroare", "Org ID invalid.");
     if (!userId) return sendEphemeral(interaction, "Eroare", "User ID invalid.");
-    if (!Number.isFinite(days) || days < 1 || days > 90) return sendEphemeral(interaction, "Eroare", "Durata invalidă (1-90 zile).");
+    if (!reason) return sendEphemeral(interaction, "Eroare", "Motivul este obligatoriu.");
+    if (dreptPlata === null) return sendEphemeral(interaction, "Eroare", "DREPT PLATA trebuie să fie DA/NU.");
+    if (!sanctiune) return sendEphemeral(interaction, "Eroare", "Sanctiunea este obligatorie.");
+    if (expira90 === null) return sendEphemeral(interaction, "Eroare", "EXPIRA IN 90 ZILE trebuie să fie DA/NU.");
     if (!ctx.settings.warn) return sendEphemeral(interaction, "Config lipsă", "Warn channel nu este setat în /famenu → Config → Canale.");
 
     await interaction.deferReply({ ephemeral: true });
     const warnId = crypto.randomUUID();
     const createdAt = now();
-    const expiresAt = createdAt + days * 24 * 60 * 60 * 1000;
-    const payload = { user_id: userId, reason: reason || "", created_by: ctx.uid, days };
+    const expiresAt = expira90 ? createdAt + 90 * 24 * 60 * 60 * 1000 : null;
+    const org = repo.getOrg(ctx.db, orgId);
+    if (!org) return interaction.editReply({ embeds: [makeEmbed("Eroare", "Org ID invalid.")] });
+    const activeWarns = repo.listWarnsByStatus(ctx.db, "ACTIVE", 100).filter(w => {
+      try {
+        const payload = JSON.parse(w.payload_json || "{}");
+        return payload.user_id === userId && Number(w.org_id) === orgId;
+      } catch {
+        return false;
+      }
+    });
+    const totalWarn = `${Math.min(activeWarns.length + 1, WARN_MAX)}/${WARN_MAX}`;
+    const payload = {
+      user_id: userId,
+      org_id: orgId,
+      org_name: org.name,
+      org_role_id: org.member_role_id,
+      reason,
+      drept_plata: dreptPlata,
+      sanctiune,
+      expira_90: expira90,
+      created_by: ctx.uid,
+      total_warn: totalWarn
+    };
 
     repo.createWarn(ctx.db, {
       warn_id: warnId,
-      org_id: null,
+      org_id: orgId,
       message_id: null,
       created_by: ctx.uid,
       created_at: createdAt,
@@ -844,11 +1007,21 @@ async function handleModal(interaction, ctx) {
       payload_json: JSON.stringify(payload)
     });
 
-    const msgRes = await sendWarnMessage(ctx, userId, warnId, reason, expiresAt);
+    const warnEmbed = buildWarnEmbed({
+      orgName: org.name,
+      orgRoleId: org.member_role_id,
+      reason,
+      dreptPlata,
+      sanctiune,
+      expiresAt,
+      totalWarn,
+      warnId
+    });
+    const msgRes = await sendWarnMessage(ctx, warnEmbed);
     if (!msgRes.ok) return interaction.editReply({ embeds: [makeEmbed("Eroare", msgRes.msg || "Nu pot trimite warn.")] });
     repo.updateWarnMessageId(ctx.db, warnId, msgRes.messageId);
-    await audit(ctx, "Warn add", `Warn ID: \`${warnId}\` | User: <@${userId}> | De: <@${ctx.uid}> | Expiră: <t:${Math.floor(expiresAt/1000)}:R>`);
-    return interaction.editReply({ embeds: [makeEmbed("Warn creat", `Warn ID: \`${warnId}\` pentru <@${userId}> (expiră <t:${Math.floor(expiresAt/1000)}:R>).`)] });
+    await audit(ctx, "Warn add", `Warn ID: \`${warnId}\` | Org: **${org.name}** | User: <@${userId}> | De: <@${ctx.uid}>`);
+    return interaction.editReply({ embeds: [warnEmbed] });
   }
 
   if (id === "famenu:warn_remove_modal") {
@@ -877,6 +1050,47 @@ async function handleModal(interaction, ctx) {
 
     await audit(ctx, "Warn remove", `Warn ID: \`${warnId}\` | De: <@${ctx.uid}> | Motiv: ${reason || "-"}`);
     return sendEphemeral(interaction, "Warn șters", `Warn \`${warnId}\` a fost marcat ca REMOVED.`);
+  }
+
+  if (id === "famenu:cooldown_add_modal") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona cooldown-uri.");
+    const userId = parseUserIds(interaction.fields.getTextInputValue("user"))[0];
+    const kindRaw = interaction.fields.getTextInputValue("kind")?.trim().toUpperCase();
+    const durationRaw = interaction.fields.getTextInputValue("duration")?.trim();
+    if (!userId) return sendEphemeral(interaction, "Eroare", "User ID invalid.");
+    if (!["PK", "BAN"].includes(kindRaw)) return sendEphemeral(interaction, "Eroare", "Tip invalid (PK/BAN).");
+    const durationMs = parseDurationMs(durationRaw);
+    if (!durationMs) return sendEphemeral(interaction, "Eroare", "Durată invalidă (ex: 30s, 10m, 1d, 1y).");
+    const expiresAt = now() + durationMs;
+    repo.upsertCooldown(ctx.db, userId, kindRaw, expiresAt, null, now());
+    const member = await ctx.guild.members.fetch(userId).catch(()=>null);
+    if (member) {
+      const roleId = kindRaw === "PK" ? ctx.settings.pkRole : ctx.settings.banRole;
+      if (roleId) {
+        const added = await safeRoleAdd(member, roleId, `Cooldown add ${kindRaw} for ${userId}`);
+        if (!added) return sendEphemeral(interaction, "Eroare", "Nu pot aplica rolul cooldown (permisiuni lipsă).");
+      }
+    }
+    await audit(ctx, "Cooldown add", `User: <@${userId}> | Tip: **${kindRaw}** | Expiră: <t:${Math.floor(expiresAt/1000)}:R> | De: <@${ctx.uid}>`);
+    return sendEphemeral(interaction, "Cooldown aplicat", `User: <@${userId}> | Tip: **${kindRaw}** | Expiră: <t:${Math.floor(expiresAt/1000)}:R>`);
+  }
+
+  if (id === "famenu:cooldown_remove_modal") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona cooldown-uri.");
+    const userId = parseUserIds(interaction.fields.getTextInputValue("user"))[0];
+    const kindRaw = interaction.fields.getTextInputValue("kind")?.trim().toUpperCase();
+    if (!userId) return sendEphemeral(interaction, "Eroare", "User ID invalid.");
+    if (!["PK", "BAN"].includes(kindRaw)) return sendEphemeral(interaction, "Eroare", "Tip invalid (PK/BAN).");
+    repo.clearCooldown(ctx.db, userId, kindRaw);
+    const member = await ctx.guild.members.fetch(userId).catch(()=>null);
+    if (member) {
+      const roleId = kindRaw === "PK" ? ctx.settings.pkRole : ctx.settings.banRole;
+      if (roleId) {
+        await safeRoleRemove(member, roleId, `Cooldown remove ${kindRaw} for ${userId}`);
+      }
+    }
+    await audit(ctx, "Cooldown remove", `User: <@${userId}> | Tip: **${kindRaw}** | De: <@${ctx.uid}>`);
+    return sendEphemeral(interaction, "Cooldown șters", `User: <@${userId}> | Tip: **${kindRaw}**`);
   }
 
   // org add/remove/search
@@ -944,6 +1158,11 @@ async function handleComponent(interaction, ctx) {
 
   if (!interaction.isButton()) return;
 
+  if (id.startsWith("fmenu:open:")) {
+    const orgId = Number(id.split(":")[2]);
+    return orgPanelView(interaction, ctx, orgId);
+  }
+
   if (id === "fmenu:back") return fmenuHome(interaction, ctx);
   if (id === "famenu:back") return famenuHome(interaction, ctx);
 
@@ -962,6 +1181,11 @@ async function handleComponent(interaction, ctx) {
   if (id === "famenu:warns") {
     if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona warn-uri.");
     const view = warnsView(ctx);
+    return sendEphemeral(interaction, view.emb.data.title, view.emb.data.description, view.rows);
+  }
+  if (id === "famenu:cooldowns") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona cooldown-uri.");
+    const view = cooldownsView(ctx);
     return sendEphemeral(interaction, view.emb.data.title, view.emb.data.description, view.rows);
   }
 
@@ -1033,6 +1257,14 @@ async function handleComponent(interaction, ctx) {
     const emb = makeEmbed("⚠️ Warns active", desc);
     return sendEphemeral(interaction, emb.data.title, emb.data.description, rowsFromButtons([btn("famenu:back","Back",ButtonStyle.Secondary,"⬅️")]));
   }
+  if (id === "famenu:cooldown_add") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona cooldown-uri.");
+    return showModalSafe(interaction, cooldownAddModal());
+  }
+  if (id === "famenu:cooldown_remove") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona cooldown-uri.");
+    return showModalSafe(interaction, cooldownRemoveModal());
+  }
 
   if (id.startsWith("famenu:setrole:")) {
     if (!requireOwner(ctx)) return sendEphemeral(interaction, "⛔ Owner only", "Doar ownerul.");
@@ -1071,6 +1303,7 @@ async function handleComponent(interaction, ctx) {
     if (action === "roster") return rosterView(interaction, ctx, orgId);
     if (action === "cooldowns") return cooldownsView(interaction, ctx, orgId);
     if (action === "search") return showModalSafe(interaction, searchModal(orgId));
+    if (action === "sticky") return stickyPanel(interaction, ctx, orgId);
   }
 
   return sendEphemeral(interaction, "Eroare", "Acțiune necunoscută.");
@@ -1079,32 +1312,27 @@ async function handleComponent(interaction, ctx) {
 export async function handleInteraction(interaction, client) {
   const ctx = getCtx(interaction);
 
-  try {
-    if (interaction.isChatInputCommand()) {
-      if (interaction.commandName === "fmenu") {
-        await fmenuHome(interaction, ctx);
-        return;
-      }
-      if (interaction.commandName === "famenu") {
-        await famenuHome(interaction, ctx);
-        return;
-      }
-      if (interaction.commandName === "falert") {
-        await handleFalert(interaction, ctx);
-        return;
-      }
-    }
-
-    if (interaction.isModalSubmit()) {
-      await handleModal(interaction, ctx);
+  if (interaction.isChatInputCommand()) {
+    if (interaction.commandName === "fmenu") {
+      await fmenuHome(interaction, ctx);
       return;
     }
-    if (interaction.isButton() || interaction.isStringSelectMenu()) {
-      await handleComponent(interaction, ctx);
+    if (interaction.commandName === "famenu") {
+      await famenuHome(interaction, ctx);
       return;
     }
+    if (interaction.commandName === "falert") {
+      await handleFalert(interaction, ctx);
+      return;
+    }
+  }
 
-  } finally {
-    ctx.db.close();
+  if (interaction.isModalSubmit()) {
+    await handleModal(interaction, ctx);
+    return;
+  }
+  if (interaction.isButton() || interaction.isStringSelectMenu()) {
+    await handleComponent(interaction, ctx);
+    return;
   }
 }
