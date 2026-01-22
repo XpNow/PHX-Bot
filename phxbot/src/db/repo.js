@@ -69,3 +69,45 @@ export function counts(db) {
   const bans = db.prepare("SELECT count(*) c FROM cooldowns WHERE kind='BAN'").get().c;
   return { orgs, members, pk, bans };
 }
+
+export function createWarn(db, warn) {
+  db.prepare(`
+    INSERT INTO warns(warn_id, org_id, message_id, created_by, created_at, expires_at, status, payload_json)
+    VALUES(?,?,?,?,?,?,?,?)
+  `).run(
+    warn.warn_id,
+    warn.org_id ?? null,
+    warn.message_id ?? null,
+    warn.created_by,
+    warn.created_at,
+    warn.expires_at ?? null,
+    warn.status,
+    warn.payload_json
+  );
+}
+export function updateWarnMessageId(db, warnId, messageId) {
+  db.prepare("UPDATE warns SET message_id=? WHERE warn_id=?").run(messageId, warnId);
+}
+export function getWarn(db, warnId) {
+  return db.prepare("SELECT * FROM warns WHERE warn_id=?").get(warnId);
+}
+export function listWarnsByStatus(db, status, limit=20) {
+  return db.prepare("SELECT * FROM warns WHERE status=? ORDER BY created_at DESC LIMIT ?").all(status, limit);
+}
+export function setWarnStatus(db, warnId, status) {
+  db.prepare("UPDATE warns SET status=? WHERE warn_id=?").run(status, warnId);
+}
+export function listExpiringWarns(db, nowTs) {
+  return db.prepare(`
+    SELECT * FROM warns
+    WHERE status='ACTIVE' AND expires_at IS NOT NULL AND expires_at <= ?
+    ORDER BY expires_at ASC
+  `).all(nowTs);
+}
+export function listExpiringCooldowns(db, nowTs) {
+  return db.prepare(`
+    SELECT * FROM cooldowns
+    WHERE expires_at <= ?
+    ORDER BY expires_at ASC
+  `).all(nowTs);
+}

@@ -1,6 +1,8 @@
+import crypto from "crypto";
 import {
   ActionRowBuilder,
-  ButtonStyle
+  ButtonStyle,
+  EmbedBuilder
 } from "discord.js";
 import { openDb, ensureSchema, getSetting, setSetting, getGlobal, setGlobal } from "../db/db.js";
 import * as repo from "../db/repo.js";
@@ -279,8 +281,9 @@ async function famenuHome(interaction, ctx) {
     btn("famenu:orgs", "Organizații", ButtonStyle.Primary, "🏛️"),
     btn("famenu:config", "Config", ButtonStyle.Secondary, "⚙️"),
     btn("famenu:diag", "Diagnostic", ButtonStyle.Secondary, "🩺"),
+    requireSupervisorOrOwner(ctx) ? btn("famenu:warns", "Warns", ButtonStyle.Secondary, "⚠️") : null
   ];
-  const rows = rowsFromButtons(buttons);
+  const rows = rowsFromButtons(buttons.filter(Boolean));
   return sendEphemeral(interaction, emb.data.title, emb.data.description, rows);
 }
 
@@ -335,6 +338,32 @@ function setRateLimitModal() {
   return modal("famenu:setratelimit_modal", "Set rate limit", [
     input("value", "Acțiuni per minut", undefined, true, "Ex: 20")
   ]);
+}
+
+function warnAddModal() {
+  return modal("famenu:warn_add_modal", "Adaugă warn", [
+    input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
+    input("days", "Durata (zile)", undefined, true, "Ex: 7"),
+    input("reason", "Motiv (opțional)", undefined, false, "Ex: abateri")
+  ]);
+}
+
+function warnRemoveModal() {
+  return modal("famenu:warn_remove_modal", "Șterge warn", [
+    input("warn_id", "Warn ID", undefined, true, "Ex: UUID"),
+    input("reason", "Motiv (opțional)", undefined, false, "Ex: anulare")
+  ]);
+}
+
+function warnsView(ctx) {
+  const emb = makeEmbed("⚠️ Warns", "Adaugă/șterge warn-uri (Supervisor/Owner).");
+  const buttons = [
+    btn("famenu:warn_add", "Adaugă warn", ButtonStyle.Primary, "➕"),
+    btn("famenu:warn_remove", "Șterge warn", ButtonStyle.Secondary, "🗑️"),
+    btn("famenu:warn_list", "Listă active", ButtonStyle.Secondary, "📋"),
+    btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️")
+  ];
+  return { emb, rows: rowsFromButtons(buttons) };
 }
 
 function deleteOrgModal() {
@@ -430,6 +459,30 @@ async function reconcileOrg(ctx, orgId, members) {
   }
 
   return { ok:true, added, removed, org };
+}
+
+async function sendWarnMessage(ctx, userId, warnId, reason, expiresAt) {
+  const warnChannelId = ctx.settings.warn;
+  if (!warnChannelId) return { ok:false, msg:"Warn channel nu este setat." };
+  try {
+    const ch = await ctx.guild.channels.fetch(warnChannelId);
+    if (!ch || !ch.isTextBased()) {
+      console.error("[WARN] Invalid warn channel:", warnChannelId);
+      return { ok:false, msg:"Warn channel invalid." };
+    }
+    const desc = [
+      `User: <@${userId}>`,
+      `Motiv: ${reason || "—"}`,
+      `Warn ID: \`${warnId}\``,
+      `Expiră: <t:${Math.floor(expiresAt/1000)}:R>`
+    ].join("\n");
+    const emb = makeEmbed("⚠️ WARN", desc);
+    const msg = await ch.send({ embeds: [emb] });
+    return { ok:true, messageId: msg.id };
+  } catch (err) {
+    console.error("[WARN] send failed:", err);
+    return { ok:false, msg:"Nu pot trimite mesaj în warn channel." };
+  }
 }
 
 async function reconcileCooldownRoles(ctx, members) {
@@ -764,6 +817,68 @@ async function handleModal(interaction, ctx) {
     return interaction.editReply({ embeds: [makeEmbed("Reconcile org", summary)] });
   }
 
+  if (id === "famenu:warn_add_modal") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona warn-uri.");
+    const userId = parseUserIds(interaction.fields.getTextInputValue("user"))[0];
+    const daysRaw = interaction.fields.getTextInputValue("days")?.trim();
+    const reason = interaction.fields.getTextInputValue("reason")?.trim();
+    const days = Number(daysRaw);
+    if (!userId) return sendEphemeral(interaction, "Eroare", "User ID invalid.");
+    if (!Number.isFinite(days) || days < 1 || days > 90) return sendEphemeral(interaction, "Eroare", "Durata invalidă (1-90 zile).");
+    if (!ctx.settings.warn) return sendEphemeral(interaction, "Config lipsă", "Warn channel nu este setat în /famenu → Config → Canale.");
+
+    await interaction.deferReply({ ephemeral: true });
+    const warnId = crypto.randomUUID();
+    const createdAt = now();
+    const expiresAt = createdAt + days * 24 * 60 * 60 * 1000;
+    const payload = { user_id: userId, reason: reason || "", created_by: ctx.uid, days };
+
+    repo.createWarn(ctx.db, {
+      warn_id: warnId,
+      org_id: null,
+      message_id: null,
+      created_by: ctx.uid,
+      created_at: createdAt,
+      expires_at: expiresAt,
+      status: "ACTIVE",
+      payload_json: JSON.stringify(payload)
+    });
+
+    const msgRes = await sendWarnMessage(ctx, userId, warnId, reason, expiresAt);
+    if (!msgRes.ok) return interaction.editReply({ embeds: [makeEmbed("Eroare", msgRes.msg || "Nu pot trimite warn.")] });
+    repo.updateWarnMessageId(ctx.db, warnId, msgRes.messageId);
+    await audit(ctx, "Warn add", `Warn ID: \`${warnId}\` | User: <@${userId}> | De: <@${ctx.uid}> | Expiră: <t:${Math.floor(expiresAt/1000)}:R>`);
+    return interaction.editReply({ embeds: [makeEmbed("Warn creat", `Warn ID: \`${warnId}\` pentru <@${userId}> (expiră <t:${Math.floor(expiresAt/1000)}:R>).`)] });
+  }
+
+  if (id === "famenu:warn_remove_modal") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona warn-uri.");
+    const warnId = interaction.fields.getTextInputValue("warn_id")?.trim();
+    const reason = interaction.fields.getTextInputValue("reason")?.trim();
+    if (!warnId) return sendEphemeral(interaction, "Eroare", "Warn ID invalid.");
+    const warn = repo.getWarn(ctx.db, warnId);
+    if (!warn) return sendEphemeral(interaction, "Eroare", "Warn ID inexistent.");
+    repo.setWarnStatus(ctx.db, warnId, "REMOVED");
+
+    if (warn.message_id && ctx.settings.warn) {
+      const ch = await ctx.guild.channels.fetch(ctx.settings.warn).catch(()=>null);
+      if (ch && ch.isTextBased()) {
+        const msg = await ch.messages.fetch(warn.message_id).catch(()=>null);
+        if (msg) {
+          const embed = msg.embeds?.[0];
+          const eb = new EmbedBuilder(embed?.data ?? {})
+            .setFooter({ text: `STATUS: REMOVED • ${reason || "fără motiv"}` });
+          await msg.edit({ embeds: [eb] }).catch((err)=> {
+            console.error("[WARN] edit message failed:", err);
+          });
+        }
+      }
+    }
+
+    await audit(ctx, "Warn remove", `Warn ID: \`${warnId}\` | De: <@${ctx.uid}> | Motiv: ${reason || "-"}`);
+    return sendEphemeral(interaction, "Warn șters", `Warn \`${warnId}\` a fost marcat ca REMOVED.`);
+  }
+
   // org add/remove/search
   if (id.endsWith(":add_modal")) {
     const orgId = Number(id.split(":")[1]);
@@ -844,6 +959,11 @@ async function handleComponent(interaction, ctx) {
     ];
     return sendEphemeral(interaction, emb.data.title, emb.data.description, rowsFromButtons(buttons));
   }
+  if (id === "famenu:warns") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona warn-uri.");
+    const view = warnsView(ctx);
+    return sendEphemeral(interaction, view.emb.data.title, view.emb.data.description, view.rows);
+  }
 
   if (id === "famenu:config:roles") {
     if (!requireOwner(ctx)) return sendEphemeral(interaction, "⛔ Owner only", "Doar ownerul.");
@@ -888,6 +1008,30 @@ async function handleComponent(interaction, ctx) {
   if (id === "famenu:reconcile_org") {
     if (!requireStaff(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar staff poate folosi această acțiune.");
     return showModalSafe(interaction, reconcileOrgModal());
+  }
+
+  if (id === "famenu:warn_add") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona warn-uri.");
+    return showModalSafe(interaction, warnAddModal());
+  }
+  if (id === "famenu:warn_remove") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona warn-uri.");
+    return showModalSafe(interaction, warnRemoveModal());
+  }
+  if (id === "famenu:warn_list") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona warn-uri.");
+    const warns = repo.listWarnsByStatus(ctx.db, "ACTIVE", 10);
+    const desc = warns.length
+      ? warns.map(w => {
+        let payload = {};
+        try { payload = JSON.parse(w.payload_json); } catch {}
+        const userId = payload.user_id ? `<@${payload.user_id}>` : "—";
+        const exp = w.expires_at ? `<t:${Math.floor(w.expires_at/1000)}:R>` : "—";
+        return `• \`${w.warn_id}\` | ${userId} | Expiră: ${exp}`;
+      }).join("\n")
+      : "Nu există warn-uri active.";
+    const emb = makeEmbed("⚠️ Warns active", desc);
+    return sendEphemeral(interaction, emb.data.title, emb.data.description, rowsFromButtons([btn("famenu:back","Back",ButtonStyle.Secondary,"⬅️")]));
   }
 
   if (id.startsWith("famenu:setrole:")) {
@@ -937,13 +1081,28 @@ export async function handleInteraction(interaction, client) {
 
   try {
     if (interaction.isChatInputCommand()) {
-      if (interaction.commandName === "fmenu") return fmenuHome(interaction, ctx);
-      if (interaction.commandName === "famenu") return famenuHome(interaction, ctx);
-      if (interaction.commandName === "falert") return handleFalert(interaction, ctx);
+      if (interaction.commandName === "fmenu") {
+        await fmenuHome(interaction, ctx);
+        return;
+      }
+      if (interaction.commandName === "famenu") {
+        await famenuHome(interaction, ctx);
+        return;
+      }
+      if (interaction.commandName === "falert") {
+        await handleFalert(interaction, ctx);
+        return;
+      }
     }
 
-    if (interaction.isModalSubmit()) return handleModal(interaction, ctx);
-    if (interaction.isButton() || interaction.isStringSelectMenu()) return handleComponent(interaction, ctx);
+    if (interaction.isModalSubmit()) {
+      await handleModal(interaction, ctx);
+      return;
+    }
+    if (interaction.isButton() || interaction.isStringSelectMenu()) {
+      await handleComponent(interaction, ctx);
+      return;
+    }
 
   } finally {
     ctx.db.close();

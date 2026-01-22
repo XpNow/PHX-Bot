@@ -46,6 +46,16 @@ export function ensureSchema(db) {
     last_left_at INTEGER,
     last_removed_by TEXT
   );
+  CREATE TABLE IF NOT EXISTS warns (
+    warn_id TEXT PRIMARY KEY,
+    org_id INTEGER,
+    message_id TEXT,
+    created_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER,
+    status TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS global_state (key TEXT PRIMARY KEY, value TEXT);
   `);
 
