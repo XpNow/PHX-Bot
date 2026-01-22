@@ -1,6 +1,5 @@
-import { listExpiringCooldowns, listExpiringWarns, setWarnStatus } from '../db/repo.js';
-import { clearExpiredCooldownForUser } from './orgService.js';
-import { getSetting } from '../db/db.js';
+import { listExpiringCooldowns, listExpiringWarns, listWarnsByStatus, setWarnStatus, clearCooldown } from '../db/repo.js';
+import { getSetting, getGlobal, setGlobal } from '../db/db.js';
 import { EmbedBuilder } from 'discord.js';
 import { COLORS } from '../ui/theme.js';
 
@@ -17,18 +16,47 @@ async function tick({ client, db }) {
   const guild = await client.guilds.fetch(guildId).catch(() => null);
   if (!guild) return;
 
+  const formatDaysLeft = (expiresAt) => {
+    if (!expiresAt) return "—";
+    const diff = Math.max(0, expiresAt - Date.now());
+    return `${Math.ceil(diff / (24 * 60 * 60 * 1000))} zile`;
+  };
+
+  const buildWarnEmbed = (payload, warnId, expiresAt) => {
+    const lines = [
+      `Organizație: ${payload?.org_role_id ? `<@&${payload.org_role_id}>` : (payload?.org_name || "—")}`,
+      `Motiv: ${payload?.reason || "—"}`,
+      `DREPT PLATA: ${payload?.drept_plata ? "DA" : "NU"}`,
+      `SANCTIUNEA OFERITA: ${payload?.sanctiune || "—"}`,
+      `EXPIRA IN 90 ZILE: ${expiresAt ? "DA" : "NU"}`,
+      `EXPIRĂ ÎN: ${expiresAt ? formatDaysLeft(expiresAt) : "—"}`,
+      `TOTAL WARN: ${payload?.total_warn || "—"}`
+    ];
+    const emb = new EmbedBuilder().setTitle("⚠️ WARN").setDescription(lines.join("\n"));
+    if (warnId) emb.setFooter({ text: `WARN ID: ${warnId}` });
+    return emb;
+  };
+
   // Expire cooldowns
-  const expCooldowns = listExpiringCooldowns(db);
+  const now = Date.now();
+  const expCooldowns = listExpiringCooldowns(db, now);
+  const pkRole = getSetting(db, 'pk_role_id');
+  const banRole = getSetting(db, 'ban_role_id');
   for (const cd of expCooldowns) {
-    await clearExpiredCooldownForUser({ db, guild, userId: cd.user_id });
+    const member = await guild.members.fetch(cd.user_id).catch(() => null);
+    if (member) {
+      if (cd.kind === 'PK' && pkRole) await member.roles.remove(pkRole).catch(() => {});
+      if (cd.kind === 'BAN' && banRole) await member.roles.remove(banRole).catch(() => {});
+    }
+    clearCooldown(db, cd.user_id, cd.kind);
   }
 
   // Expire warns: edit message + mark EXPIRED
-  const warnChannelId = getSetting(db, 'WARN_CHANNEL_ID', '');
+  const warnChannelId = getSetting(db, 'warn_channel_id');
   if (warnChannelId) {
     const channel = await guild.channels.fetch(warnChannelId).catch(() => null);
     if (channel && channel.isTextBased()) {
-      const expWarns = listExpiringWarns(db);
+      const expWarns = listExpiringWarns(db, now);
       for (const w of expWarns) {
         try {
           const msg = await channel.messages.fetch(w.message_id).catch(() => null);
@@ -43,6 +71,21 @@ async function tick({ client, db }) {
         } catch {
           // ignore
         }
+      }
+
+      const lastRefresh = Number(getGlobal(db, "warn_refresh_ts") || "0");
+      if (now - lastRefresh > 24 * 60 * 60 * 1000) {
+        const activeWarns = listWarnsByStatus(db, "ACTIVE", 100);
+        for (const w of activeWarns) {
+          if (!w.message_id) continue;
+          const msg = await channel.messages.fetch(w.message_id).catch(() => null);
+          if (!msg) continue;
+          let payload = {};
+          try { payload = JSON.parse(w.payload_json || "{}"); } catch {}
+          const emb = buildWarnEmbed(payload, w.warn_id, w.expires_at);
+          await msg.edit({ embeds: [emb] }).catch(() => {});
+        }
+        setGlobal(db, "warn_refresh_ts", String(now));
       }
     }
   }
