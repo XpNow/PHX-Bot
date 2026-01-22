@@ -720,6 +720,15 @@ async function addToOrg(ctx, targetMember, orgId, role) {
     return { ok:false, msg:"Organizația nu există." };
   }
 
+  const existing = repo.getMembership(ctx.db, targetMember.id);
+  if (existing) {
+    if (existing.org_id === orgId) {
+      return { ok:false, msg:"Userul este deja în această organizație." };
+    }
+    const existingOrg = repo.getOrg(ctx.db, existing.org_id);
+    return { ok:false, msg:`Userul este deja într-o altă organizație (${existingOrg?.name ?? existing.org_id}).` };
+  }
+
   // block if cooldown active
   const pk = repo.getCooldown(ctx.db, targetMember.id, "PK");
   const ban = repo.getCooldown(ctx.db, targetMember.id, "BAN");
@@ -1079,17 +1088,22 @@ async function handleModal(interaction, ctx) {
     await interaction.deferReply({ ephemeral: true });
 
     let ok=0, bad=0;
+    const errors = [];
     for (const uid of users) {
       const m = await ctx.guild.members.fetch(uid).catch((err)=> {
         console.error(`[ADD] fetch member failed for ${uid}:`, err);
         return null;
       });
-      if (!m) { bad++; continue; }
+      if (!m) { bad++; errors.push("Nu pot găsi userul în guild."); continue; }
       const res = await addToOrg(ctx, m, orgId, "MEMBER");
-      res.ok ? ok++ : bad++;
+      if (res.ok) ok++;
+      else {
+        bad++;
+        if (res.msg) errors.push(res.msg);
+      }
     }
-    const note = bad > 0 ? "\nUnele acțiuni au eșuat. Verifică permisiunile botului și rolurile." : "";
-    return interaction.editReply({ embeds: [makeEmbed("Done", `Adăugați: **${ok}** | Eșuați: **${bad}**${note}`)] });
+    const note = bad > 0 && errors.length ? `\nMotiv principal: ${errors[0]}` : "";
+    return interaction.editReply({ embeds: [makeEmbed("Rezultat", `Adăugați: **${ok}** | Eșuați: **${bad}**${note}`)] });
   }
 
   if (id.endsWith(":remove_modal") || id.endsWith(":remove_pk_modal")) {
@@ -1100,17 +1114,22 @@ async function handleModal(interaction, ctx) {
     if (!users.length) return sendEphemeral(interaction, "Eroare", "Nu am găsit User ID-uri valide.");
     await interaction.deferReply({ ephemeral: true });
     let ok=0, bad=0;
+    const errors = [];
     for (const uid of users) {
       const m = await ctx.guild.members.fetch(uid).catch((err)=> {
         console.error(`[REMOVE] fetch member failed for ${uid}:`, err);
         return null;
       });
-      if (!m) { bad++; continue; }
+      if (!m) { bad++; errors.push("Nu pot găsi userul în guild."); continue; }
       const res = pk ? await applyPk(ctx, m, orgId, ctx.uid) : await removeFromOrg(ctx, m, orgId, ctx.uid);
-      res.ok ? ok++ : bad++;
+      if (res.ok) ok++;
+      else {
+        bad++;
+        if (res.msg) errors.push(res.msg);
+      }
     }
-    const note = bad > 0 ? "\nUnele acțiuni au eșuat. Verifică permisiunile botului și rolurile." : "";
-    return interaction.editReply({ embeds: [makeEmbed("Done", `Procesați: **${ok}** | Eșuați: **${bad}**${note}`)] });
+    const note = bad > 0 && errors.length ? `\nMotiv principal: ${errors[0]}` : "";
+    return interaction.editReply({ embeds: [makeEmbed("Rezultat", `Procesați: **${ok}** | Eșuați: **${bad}**${note}`)] });
   }
 
   if (id.endsWith(":search_modal")) {
