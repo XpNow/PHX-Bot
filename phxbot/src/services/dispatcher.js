@@ -343,6 +343,7 @@ async function orgPanelView(interaction, ctx, orgId) {
     btn(`org:${orgId}:search`, "Search", ButtonStyle.Secondary, "🔎"),
     canSetRanks ? btn(`org:${orgId}:setrank`, "Set rank", ButtonStyle.Secondary, "🪪") : null,
     btn(`org:${orgId}:cooldowns`, "Cooldowns", ButtonStyle.Secondary, "⏳"),
+    btn(`org:${orgId}:sticky`, "Sticky Panel", ButtonStyle.Secondary, "📌"),
     btn(`fmenu:back`, "Back", ButtonStyle.Secondary, "⬅️"),
   ];
 
@@ -1378,6 +1379,11 @@ async function handleComponent(interaction, ctx) {
   }
 
   if (!interaction.isButton()) return;
+
+  if (id.startsWith("fmenu:open:")) {
+    const orgId = Number(id.split(":")[2]);
+    return orgPanelView(interaction, ctx, orgId);
+  }
 
   if (id === "fmenu:back") return fmenuHome(interaction, ctx);
   if (id === "famenu:back") return famenuHome(interaction, ctx);
