@@ -117,19 +117,23 @@ function parseDurationMs(input) {
 
 async function fetchMembersWithRetry(guild, label) {
   try {
-    return await guild.members.fetch();
+    const members = await guild.members.fetch();
+    return { members, retryMs: 0 };
   } catch (err) {
     const retryMs = Number(err?.retry_after || err?.retryAfter || 0) * 1000;
     if (retryMs > 0) {
       console.warn(`[${label}] rate limited, retrying after ${retryMs}ms`);
       await new Promise(resolve => setTimeout(resolve, retryMs));
-      return guild.members.fetch().catch((retryErr) => {
+      try {
+        const members = await guild.members.fetch();
+        return { members, retryMs };
+      } catch (retryErr) {
         console.error(`[${label}] fetch members failed after retry:`, retryErr);
-        return null;
-      });
+        return { members: null, retryMs };
+      }
     }
     console.error(`[${label}] fetch members failed:`, err);
-    return null;
+    return { members: null, retryMs: 0 };
   }
 }
 
@@ -713,6 +717,58 @@ function cooldownRemoveModal() {
   ]);
 }
 
+function warnAddModalForm() {
+  return modal("famenu:warn_add_modal", "Adaugă warn", [
+    input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
+    input("reason", "Motiv", undefined, true, "Ex: 2 Mafii la bătaie"),
+    input("drept_plata", "DREPT PLATA (DA/NU)", undefined, true, "DA / NU"),
+    input("sanctiune", "SANCTIUNEA OFERITA", undefined, true, "1/3 Mafia Warn")
+  ]);
+}
+
+function warnRemoveModal() {
+  return modal("famenu:warn_remove_modal", "Șterge warn", [
+    input("warn_id", "Warn ID", undefined, true, "Ex: UUID"),
+    input("reason", "Motiv (opțional)", undefined, false, "Ex: anulare")
+  ]);
+}
+
+function warnsView(ctx) {
+  const emb = makeEmbed("Warns", "Gestionare warn-uri (Supervisor/Owner).");
+  const buttons = [
+    btn("famenu:warn_add", "Adaugă warn", ButtonStyle.Primary, "➕"),
+    btn("famenu:warn_remove", "Șterge warn", ButtonStyle.Secondary, "🗑️"),
+    btn("famenu:warn_list", "Listă active", ButtonStyle.Secondary, "📋"),
+    btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️")
+  ];
+  return { emb, rows: rowsFromButtons(buttons) };
+}
+
+function cooldownsAdminView(ctx) {
+  const emb = makeEmbed("Cooldowns", "Gestionează cooldown-uri (Supervisor/Owner).");
+  const buttons = [
+    btn("famenu:cooldown_add", "Adaugă cooldown", ButtonStyle.Primary, "➕"),
+    btn("famenu:cooldown_remove", "Șterge cooldown", ButtonStyle.Secondary, "🗑️"),
+    btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️")
+  ];
+  return { emb, rows: rowsFromButtons(buttons) };
+}
+
+function cooldownAddModal() {
+  return modal("famenu:cooldown_add_modal", "Adaugă cooldown", [
+    input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
+    input("kind", "Tip (PK/BAN)", undefined, true, "PK sau BAN"),
+    input("duration", "Durată (ex: 30s, 10m, 1d, 1y)", undefined, true, "30s / 10m / 1d")
+  ]);
+}
+
+function cooldownRemoveModal() {
+  return modal("famenu:cooldown_remove_modal", "Șterge cooldown", [
+    input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
+    input("kind", "Tip (PK/BAN)", undefined, true, "PK sau BAN")
+  ]);
+}
+
 function deleteOrgModal() {
   return modal("famenu:deleteorg_modal", "Delete organizatie", [
     input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
@@ -733,6 +789,19 @@ function removeMembersModal(orgId, pk) {
 function searchModal(orgId) {
   return modal(`org:${orgId}:search_modal`, "Search player", [
     input("user", "User ID", undefined, true, "Ex: 123... / @Player"),
+  ]);
+}
+
+function reconcileOrgModal() {
+  return modal("famenu:reconcile_org_modal", "Reconcile organizație", [
+    input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
+  ]);
+}
+
+function setRankModal(orgId) {
+  return modal(`org:${orgId}:setrank_modal`, "Setează rank", [
+    input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
+    input("rank", "Rank (LEADER/COLEADER/MEMBER)", undefined, true, "Ex: COLEADER")
   ]);
 }
 
@@ -1125,12 +1194,12 @@ async function rosterView(interaction, ctx, orgId, useEditReply = false) {
     const emb = makeEmbed("Eroare", "Organizația nu există.");
     return useEditReply ? interaction.editReply({ embeds: [emb] }) : sendEphemeral(interaction, emb.data.title, emb.data.description);
   }
-  const members = await ctx.guild.members.fetch().catch((err)=> {
-    console.error("[ROSTER] fetch members failed:", err);
-    return null;
-  });
+  const { members, retryMs } = await fetchMembersWithRetry(ctx.guild, "ROSTER");
   if (!members) {
-    const emb = makeEmbed("Eroare", "Nu pot prelua membrii guild-ului.");
+    const reason = retryMs > 0
+      ? `Discord rate limit. Încearcă din nou în ~${Math.ceil(retryMs / 1000)}s.`
+      : "Nu pot prelua membrii guild-ului.";
+    const emb = makeEmbed("Eroare", reason);
     return useEditReply ? interaction.editReply({ embeds: [emb] }) : sendEphemeral(interaction, emb.data.title, emb.data.description);
   }
   const leaderRole = org.leader_role_id ? ctx.guild.roles.cache.get(org.leader_role_id) : null;
@@ -1293,8 +1362,13 @@ async function handleModal(interaction, ctx) {
     }
 
     // Put everyone in PK cooldown 3 days on delete
-    const members = await fetchMembersWithRetry(ctx.guild, "DELETE ORG");
-    if (!members) return interaction.editReply({ embeds: [makeEmbed("Eroare", "Nu pot prelua membrii guild-ului pentru PK.")] });
+    const { members, retryMs } = await fetchMembersWithRetry(ctx.guild, "DELETE ORG");
+    if (!members) {
+      const msg = retryMs > 0
+        ? `Discord rate limit. Încearcă din nou în ~${Math.ceil(retryMs / 1000)}s.`
+        : "Nu pot prelua membrii guild-ului pentru PK.";
+      return interaction.editReply({ embeds: [makeEmbed("Eroare", msg)] });
+    }
     {
       const orgMembers = members.filter(m =>
         m.roles.cache.has(org.member_role_id) ||
@@ -1321,8 +1395,13 @@ async function handleModal(interaction, ctx) {
     const orgId = Number(interaction.fields.getTextInputValue("org_id")?.trim());
     if (!orgId) return sendEphemeral(interaction, "Eroare", "Org ID invalid.");
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const members = await fetchMembersWithRetry(ctx.guild, "RECONCILE ORG");
-    if (!members) return interaction.editReply({ embeds: [makeEmbed("Eroare", "Nu pot prelua membrii guild-ului.")] });
+    const { members, retryMs } = await fetchMembersWithRetry(ctx.guild, "RECONCILE ORG");
+    if (!members) {
+      const msg = retryMs > 0
+        ? `Discord rate limit. Încearcă din nou în ~${Math.ceil(retryMs / 1000)}s.`
+        : "Nu pot prelua membrii guild-ului.";
+      return interaction.editReply({ embeds: [makeEmbed("Eroare", msg)] });
+    }
     const res = await reconcileOrg(ctx, orgId, members);
     if (!res.ok) return interaction.editReply({ embeds: [makeEmbed("Eroare", res.msg || "Reconcile eșuat.")] });
     const summary = `Org: **${res.org.name}**\nAdded: **${res.added}**\nRemoved: **${res.removed}**`;
@@ -1622,8 +1701,13 @@ async function handleComponent(interaction, ctx) {
   if (id === "famenu:reconcile_global") {
     if (!requireStaff(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar staff poate folosi această acțiune.");
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const members = await fetchMembersWithRetry(ctx.guild, "RECONCILE GLOBAL");
-    if (!members) return interaction.editReply({ embeds: [makeEmbed("Eroare", "Nu pot prelua membrii guild-ului.")] });
+    const { members, retryMs } = await fetchMembersWithRetry(ctx.guild, "RECONCILE GLOBAL");
+    if (!members) {
+      const msg = retryMs > 0
+        ? `Discord rate limit. Încearcă din nou în ~${Math.ceil(retryMs / 1000)}s.`
+        : "Nu pot prelua membrii guild-ului.";
+      return interaction.editReply({ embeds: [makeEmbed("Eroare", msg)] });
+    }
     let added = 0;
     let removed = 0;
     for (const org of repo.listOrgs(ctx.db)) {

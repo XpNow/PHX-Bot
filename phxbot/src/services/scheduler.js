@@ -43,6 +43,17 @@ function setWarnStatusLine(description, statusLine) {
   return lines.join("\n");
 }
 
+function setWarnStatusLine(description, statusLine) {
+  const lines = description ? description.split("\n") : [];
+  const idx = lines.findIndex(line => line.startsWith("Status:"));
+  if (idx >= 0) {
+    lines[idx] = statusLine;
+  } else {
+    lines.push(statusLine);
+  }
+  return lines.join("\n");
+}
+
 
 async function tick({ client, db }) {
   const guildId = process.env.DISCORD_GUILD_ID;
