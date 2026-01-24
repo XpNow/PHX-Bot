@@ -12,7 +12,6 @@ export const COLORS = {
 export function orgColor(org) {
   if (!org) return COLORS.GLOBAL;
   if (org.type === 'MAFIA') return COLORS.MAFIA;
-  // Legal: choose by name heuristic
   const n = (org.name || '').toLowerCase();
   if (n.includes('lspd') || n.includes('pol')) return COLORS.LSPD;
   if (n.includes('smurd') || n.includes('med')) return COLORS.SMURD;

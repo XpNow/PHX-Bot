@@ -19,7 +19,6 @@ function addDaysIso(days) {
 }
 
 export async function addMemberToOrg({ db, guild, actor, targetUserId, org }) {
-  // Validations: single org, no cooldown
   const existing = getMembership(db, targetUserId);
   if (existing) {
     throw new Error('Acest membru este deja într-o organizație.');
@@ -33,12 +32,10 @@ export async function addMemberToOrg({ db, guild, actor, targetUserId, org }) {
   const member = await guild.members.fetch(targetUserId).catch(() => null);
   if (!member) throw new Error('Nu pot găsi membrul pe server (user invalid sau nu este in guild).');
 
-  // Apply roles
   if (org.base_role_id) {
     await member.roles.add(org.base_role_id, 'Org add (phxbot)');
   }
 
-  // Apply rank role if present in org_ranks (MEMBER)
   const ranks = getOrgRanks(db, org.org_id);
   const memberRank = ranks.find(r => r.rank_key === 'MEMBER');
   if (memberRank?.role_id) {
@@ -58,7 +55,6 @@ export async function removeMemberFromOrg({ db, guild, actor, targetUserId, org,
 
   const member = await guild.members.fetch(targetUserId).catch(() => null);
   if (!member) {
-    // Still clear db state (member left guild)
     clearMembership(db, targetUserId);
     setLastOrg(db, targetUserId, org.org_id);
     if (withPk) {
@@ -69,7 +65,6 @@ export async function removeMemberFromOrg({ db, guild, actor, targetUserId, org,
     return null;
   }
 
-  // remove all org rank roles + base role
   const ranks = getOrgRanks(db, org.org_id);
   for (const r of ranks) {
     if (r.role_id && member.roles.cache.has(r.role_id)) {
@@ -101,7 +96,6 @@ export async function removeMemberFromOrg({ db, guild, actor, targetUserId, org,
 export async function clearExpiredCooldownForUser({ db, guild, userId }) {
   const cd = getCooldown(db, userId);
   if (!cd) return;
-  // remove role if exists
   const pkRole = getSetting(db, 'ROLE_PK_ID', '');
   const banRole = getSetting(db, 'ROLE_BAN_ID', '');
   const member = await guild.members.fetch(userId).catch(() => null);
@@ -113,7 +107,6 @@ export async function clearExpiredCooldownForUser({ db, guild, userId }) {
 }
 
 export async function applyBanOrg({ db, guild, actor, targetUserId, months }) {
-  // months: 1-6
   const existing = getMembership(db, targetUserId);
   if (existing) {
     const org = getOrgById(db, existing.org_id);

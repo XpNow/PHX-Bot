@@ -44,7 +44,6 @@ function getCtx(interaction) {
     configRole: getSetting(db, "config_role_id"),
     pkRole: getSetting(db, "pk_role_id"),
     banRole: getSetting(db, "ban_role_id"),
-    rateLimitPerMin: Number(getSetting(db, "rate_limit_per_min") || "20") || 20
   };
 
   const perms = {
@@ -275,12 +274,10 @@ function requireSupervisorOrOwner(ctx) {
 }
 
 function requireCreateOrg(ctx) {
-  // owner or admin or supervisor
   return ctx.perms.owner || ctx.perms.admin || ctx.perms.supervisor;
 }
 
 function resolveManageableOrgs(ctx) {
-  // user can manage org if they have org.member_role_id AND (leader_role OR co_leader_role)
   const orgs = repo.listOrgs(ctx.db);
   const manageable = [];
   for (const o of orgs) {
@@ -326,7 +323,6 @@ async function fmenuHome(interaction, ctx) {
     return orgPanelView(interaction, ctx, manageable[0].org.id);
   }
 
-  // Multiple orgs: show select
   const options = manageable.map(m => ({
     label: `${m.org.name} (${humanKind(m.org.kind)})`,
     value: String(m.org.id),
@@ -345,7 +341,6 @@ async function orgPanelView(interaction, ctx, orgId) {
     return sendEphemeral(interaction, "Eroare", "Organizația nu a fost găsită (posibil coruptă).");
   }
 
-  // permission: must be staff or leader/co-leader with proper roles
   const manageable = resolveManageableOrgs(ctx).find(m => m.org.id === orgId);
   if (!manageable && !ctx.perms.staff) {
     return sendEphemeral(interaction, "⛔ Acces refuzat", "Nu ai acces la această organizație.");
@@ -375,11 +370,9 @@ async function orgPanelView(interaction, ctx, orgId) {
 }
 
 async function showModalSafe(interaction, m) {
-  // For button/select interactions: must NOT deferUpdate before showing modal
   try {
     return await interaction.showModal(m);
   } catch (e) {
-    // fallback
     console.error("showModal failed:", e);
     if (!interaction.replied && !interaction.deferred) {
       try {
@@ -514,7 +507,6 @@ async function famenuConfig(interaction, ctx) {
   const buttons = [
     btn("famenu:config:roles", "Roluri de acces", ButtonStyle.Secondary, "🔐"),
     btn("famenu:config:channels", "Canale", ButtonStyle.Secondary, "📣"),
-    btn("famenu:config:ratelimit", "Rate limit", ButtonStyle.Secondary, "⏱️"),
     btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️"),
   ];
   return sendEphemeral(interaction, emb.data.title, emb.data.description, rowsFromButtons(buttons));
@@ -546,19 +538,126 @@ function setRoleModal(which) {
   };
   const key = map[which];
   return modal(`famenu:setrole_modal:${which}`, "Set Role ID", [
-    input("role_id", "Role ID (sau mention @Rol)", undefined, true, "Ex: 123... sau @Rol")
+    input("role_id", "Role ID ", undefined, true, "Ex: 123... sau @Rol")
   ]);
 }
 
 function setChannelModal(which) {
   return modal(`famenu:setchannel_modal:${which}`, "Set Channel ID", [
-    input("channel_id", "Channel ID (sau mention #canal)", undefined, true, "Ex: 123... sau #canal")
+    input("channel_id", "Channel ID ", undefined, true, "Ex: 123... sau #canal")
   ]);
 }
 
-function setRateLimitModal() {
-  return modal("famenu:setratelimit_modal", "Set rate limit", [
-    input("value", "Acțiuni per minut", undefined, true, "Ex: 20")
+
+function warnAddModal() {
+  return modal("famenu:warn_add_modal", "Adaugă warn", [
+    input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
+    input("reason", "Motiv", undefined, true, "Ex: 2 Mafii la bătaie"),
+    input("drept_plata", "DREPT PLATA (DA/NU)", undefined, true, "DA / NU"),
+  ]);
+}
+
+function warnsView(ctx) {
+  const emb = makeEmbed("Warns", "Gestionare warn-uri (Supervisor/Owner).");
+  const buttons = [
+    btn("famenu:warn_add", "Adaugă warn", ButtonStyle.Primary, "➕"),
+    btn("famenu:warn_remove", "Șterge warn", ButtonStyle.Secondary, "🗑️"),
+    btn("famenu:warn_list", "Listă active", ButtonStyle.Secondary, "📋"),
+    btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️")
+  ];
+  return { emb, rows: rowsFromButtons(buttons) };
+}
+
+function cooldownsAdminView(ctx) {
+  const emb = makeEmbed("Cooldowns", "Gestionează cooldown-uri (Supervisor/Owner).");
+  const buttons = [
+    btn("famenu:cooldown_add", "Adaugă cooldown", ButtonStyle.Primary, "➕"),
+    btn("famenu:cooldown_remove", "Șterge cooldown", ButtonStyle.Secondary, "🗑️"),
+    btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️")
+  ];
+  return { emb, rows: rowsFromButtons(buttons) };
+}
+
+function cooldownAddModal() {
+  return modal("famenu:cooldown_add_modal", "Adaugă cooldown", [
+    input("user", "User ID", undefined, true, "Ex: 123... / @Player"),
+    input("kind", "Tip (PK/BAN)", undefined, true, "PK sau BAN"),
+    input("duration", "Durată (ex: 30s, 10m, 1d, 1y)", undefined, true, "30s / 10m / 1d")
+  ]);
+}
+
+function cooldownRemoveModal() {
+  return modal("famenu:cooldown_remove_modal", "Șterge cooldown", [
+    input("user", "User ID", undefined, true, "Ex: 123..."),
+    input("kind", "Tip (PK/BAN)", undefined, true, "PK sau BAN")
+  ]);
+}
+
+function warnAddModalForm() {
+  return modal("famenu:warn_add_modal", "Adaugă warn", [
+    input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
+    input("reason", "Motiv", undefined, true, "Ex: 2 Mafii la bătaie"),
+    input("drept_plata", "DREPT PLATA (DA/NU)", undefined, true, "DA / NU"),
+    input("sanctiune", "SANCTIUNEA OFERITA", undefined, true, "1/3 Mafia Warn")
+  ]);
+}
+
+function warnRemoveModal() {
+  return modal("famenu:warn_remove_modal", "Șterge warn", [
+    input("warn_id", "Warn ID", undefined, true, "Ex: UUID"),
+    input("reason", "Motiv (opțional)", undefined, false, "Ex: anulare")
+  ]);
+}
+
+function warnAddModalForm() {
+  return modal("famenu:warn_add_modal", "Adaugă warn", [
+    input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
+    input("reason", "Motiv", undefined, true, "Ex: 2 Mafii la bătaie"),
+    input("drept_plata", "DREPT PLATA (DA/NU)", undefined, true, "DA / NU"),
+    input("sanctiune", "SANCTIUNEA OFERITA", undefined, true, "1/3 Mafia Warn")
+  ]);
+}
+
+function warnRemoveModal() {
+  return modal("famenu:warn_remove_modal", "Șterge warn", [
+    input("warn_id", "Warn ID", undefined, true, "Ex: UUID"),
+    input("reason", "Motiv (opțional)", undefined, false, "Ex: anulare")
+  ]);
+}
+
+function warnsView(ctx) {
+  const emb = makeEmbed("Warns", "Gestionare warn-uri (Supervisor/Owner).");
+  const buttons = [
+    btn("famenu:warn_add", "Adaugă warn", ButtonStyle.Primary, "➕"),
+    btn("famenu:warn_remove", "Șterge warn", ButtonStyle.Secondary, "🗑️"),
+    btn("famenu:warn_list", "Listă active", ButtonStyle.Secondary, "📋"),
+    btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️")
+  ];
+  return { emb, rows: rowsFromButtons(buttons) };
+}
+
+function cooldownsAdminView(ctx) {
+  const emb = makeEmbed("Cooldowns", "Gestionează cooldown-uri (Supervisor/Owner).");
+  const buttons = [
+    btn("famenu:cooldown_add", "Adaugă cooldown", ButtonStyle.Primary, "➕"),
+    btn("famenu:cooldown_remove", "Șterge cooldown", ButtonStyle.Secondary, "🗑️"),
+    btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️")
+  ];
+  return { emb, rows: rowsFromButtons(buttons) };
+}
+
+function cooldownAddModal() {
+  return modal("famenu:cooldown_add_modal", "Adaugă cooldown", [
+    input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
+    input("kind", "Tip (PK/BAN)", undefined, true, "PK sau BAN"),
+    input("duration", "Durată (ex: 30s, 10m, 1d, 1y)", undefined, true, "30s / 10m / 1d")
+  ]);
+}
+
+function cooldownRemoveModal() {
+  return modal("famenu:cooldown_remove_modal", "Șterge cooldown", [
+    input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
+    input("kind", "Tip (PK/BAN)", undefined, true, "PK sau BAN")
   ]);
 }
 
@@ -623,17 +722,43 @@ function deleteOrgModal() {
 
 function addMembersModal(orgId) {
   return modal(`org:${orgId}:add_modal`, "Add membri", [
-    input("users", "User ID-uri sau @mention (multi-line)", 2, true, "Ex:\n123...\n@Player"),
+    input("users", "User ID-uri (multi-line)", 2, true, "Ex:\n123...\n@Player"),
   ]);
 }
 function removeMembersModal(orgId, pk) {
   return modal(`org:${orgId}:${pk?'remove_pk':'remove'}_modal`, pk ? "Remove (PK)" : "Remove", [
-    input("users", "User ID-uri sau @mention (multi-line)", 2, true, "Ex:\n123...\n@Player"),
+    input("users", "User ID-uri (multi-line)", 2, true, "Ex:\n123...\n@Player"),
   ]);
 }
 function searchModal(orgId) {
   return modal(`org:${orgId}:search_modal`, "Search player", [
+    input("user", "User ID", undefined, true, "Ex: 123... / @Player"),
+  ]);
+}
+
+function reconcileOrgModal() {
+  return modal("famenu:reconcile_org_modal", "Reconcile organizație", [
+    input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
+  ]);
+}
+
+function setRankModal(orgId) {
+  return modal(`org:${orgId}:setrank_modal`, "Setează rank", [
     input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
+    input("rank", "Rank (LEADER/COLEADER/MEMBER)", undefined, true, "Ex: COLEADER")
+  ]);
+}
+
+function reconcileOrgModal() {
+  return modal("famenu:reconcile_org_modal", "Reconcile organizație", [
+    input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
+  ]);
+}
+
+function setRankModal(orgId) {
+  return modal(`org:${orgId}:setrank_modal`, "Setează rank", [
+    input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
+    input("rank", "Rank (LEADER/COLEADER/MEMBER)", undefined, true, "Ex: COLEADER")
   ]);
 }
 
@@ -919,7 +1044,6 @@ async function addToOrg(ctx, targetMember, orgId, role) {
     return { ok:false, msg:`Userul este deja într-o altă organizație (${existingOrg?.name ?? existing.org_id}).` };
   }
 
-  // block if cooldown active
   const pk = repo.getCooldown(ctx.db, targetMember.id, "PK");
   const ban = repo.getCooldown(ctx.db, targetMember.id, "BAN");
   if (ban && ban.expires_at > now()) {
@@ -1088,7 +1212,6 @@ async function searchResult(interaction, ctx, orgId, userId) {
 async function handleModal(interaction, ctx) {
   const id = interaction.customId;
 
-  // famenu create org
   if (id === "famenu:createorg") {
     if (!requireCreateOrg(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Nu ai permisiuni să creezi organizații.");
     const name = interaction.fields.getTextInputValue("name")?.trim();
@@ -1110,7 +1233,7 @@ async function handleModal(interaction, ctx) {
       if (!coCheck.ok) return sendEphemeral(interaction, "Eroare", coCheck.msg);
     }
     const orgId = repo.createOrg(ctx.db, { name, kind, member_role_id, leader_role_id, co_leader_role_id: co_leader_role_id || null });
-    await audit(ctx, "Create organizatie", `Org: **${name}** (${humanKind(kind)}) | ID: \`${orgId}\` | De: <@${ctx.uid}>`);
+    await audit(ctx, "Create organizatie", `Org: **${name}** (${humanKind(kind)}) | ID: \`${orgId}\` | De catre: <@${ctx.uid}>`);
     return sendEphemeral(interaction, "Creat", `Organizația **${name}** a fost creată. (ID: \`${orgId}\`)`);
   }
 
@@ -1130,7 +1253,7 @@ async function handleModal(interaction, ctx) {
     const check = roleCheck(ctx, roleId, which);
     if (!check.ok) return sendEphemeral(interaction, "Eroare", check.msg);
     setSetting(ctx.db, key, roleId);
-    await audit(ctx, "Config update", `Set **${key}** = \`${roleId}\` | De: <@${ctx.uid}>`);
+    await audit(ctx, "Config update", `Set **${key}** = \`${roleId}\` | De catre: <@${ctx.uid}>`);
     return sendEphemeral(interaction, "Salvat", "Rolul a fost setat.");
   }
 
@@ -1144,7 +1267,7 @@ async function handleModal(interaction, ctx) {
     const channel = ctx.guild.channels.cache.get(channelId);
     if (!channel || !channel.isTextBased()) return sendEphemeral(interaction, "Eroare", "Canal invalid sau nu este text.");
     setSetting(ctx.db, key, channelId);
-    await audit(ctx, "Config update", `Set **${key}** = \`${channelId}\` | De: <@${ctx.uid}>`);
+    await audit(ctx, "Config update", `Set **${key}** = \`${channelId}\` | De catre: <@${ctx.uid}>`);
     return sendEphemeral(interaction, "Salvat", "Canalul a fost setat.");
   }
 
@@ -1441,7 +1564,6 @@ async function handleModal(interaction, ctx) {
 async function handleComponent(interaction, ctx) {
   const id = interaction.customId;
 
-  // selects
   if (interaction.isStringSelectMenu()) {
     if (id === "fmenu:pickorg") {
       const orgId = Number(interaction.values[0]);
@@ -1451,10 +1573,14 @@ async function handleComponent(interaction, ctx) {
 
   if (!interaction.isButton()) return;
 
+  if (id.startsWith("fmenu:open:")) {
+    const orgId = Number(id.split(":")[2]);
+    return orgPanelView(interaction, ctx, orgId);
+  }
+
   if (id === "fmenu:back") return fmenuHome(interaction, ctx);
   if (id === "famenu:back") return famenuHome(interaction, ctx);
 
-  // famenu nav
   if (id === "famenu:config") return famenuConfig(interaction, ctx);
   if (id === "famenu:orgs") return famenuOrgs(interaction, ctx);
   if (id === "famenu:diag") {
@@ -1575,7 +1701,6 @@ async function handleComponent(interaction, ctx) {
     return showModalSafe(interaction, deleteOrgModal());
   }
 
-  // org actions
   if (id.startsWith("org:")) {
     const parts = id.split(":");
     const orgId = Number(parts[1]);

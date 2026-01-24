@@ -16,7 +16,6 @@ export function accessDeniedPanel() {
 }
 
 export function fmenuRootPanel({ ctx, stats = null }) {
-  // ctx: actor context
   if (ctx.isAdmin || ctx.isSupervisor) {
     const embed = new EmbedBuilder()
       .setColor(COLORS.GLOBAL)
@@ -47,7 +46,6 @@ export function fmenuRootPanel({ ctx, stats = null }) {
     };
   }
 
-  // Manager scoped
   if (ctx.org) {
     const embed = new EmbedBuilder()
       .setColor(orgColor(ctx.org))
