@@ -1,4 +1,4 @@
-import { Client, GatewayIntentBits, Partials } from "discord.js";
+import { Client, GatewayIntentBits, MessageFlags, Partials } from "discord.js";
 import { handleInteraction } from "./services/dispatcher.js";
 import { runSchedulers } from "./services/scheduler.js";
 import { openDb, ensureSchema, getSetting } from "./db/db.js";
@@ -61,7 +61,7 @@ client.on("interactionCreate", async (interaction) => {
     console.error("[INDEX] interaction error:", err);
     try {
       if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({ content: "A apărut o eroare internă. Încearcă din nou.", ephemeral: true });
+        await interaction.reply({ content: "A apărut o eroare internă. Încearcă din nou.", flags: MessageFlags.Ephemeral });
       }
     } catch {}
   }

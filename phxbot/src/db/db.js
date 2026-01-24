@@ -84,6 +84,7 @@ export function ensureSchema(db) {
     ["bot_channel_id", ""],
     ["admin_role_id", ""],
     ["supervisor_role_id", ""],
+    ["config_role_id", ""],
     ["pk_role_id", ""],
     ["ban_role_id", ""],
     ["rate_limit_per_min", "20"]
