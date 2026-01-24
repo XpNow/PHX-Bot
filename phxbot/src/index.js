@@ -1,5 +1,6 @@
-import { Client, GatewayIntentBits, Partials } from "discord.js";
+import { Client, GatewayIntentBits, MessageFlags, Partials } from "discord.js";
 import { handleInteraction } from "./services/dispatcher.js";
+import { runSchedulers } from "./services/scheduler.js";
 import { openDb, ensureSchema, getSetting } from "./db/db.js";
 import * as repo from "./db/repo.js";
 
@@ -19,8 +20,12 @@ const client = new Client({
   partials: [Partials.GuildMember]
 });
 
-client.once("ready", () => {
+const schedulerDb = openDb();
+ensureSchema(schedulerDb);
+
+client.once("clientReady", () => {
   console.log(`[INDEX] Logged in as ${client.user.tag}`);
+  runSchedulers({ client, db: schedulerDb });
 });
 
 // Anti-evade: when user rejoins, reapply cooldown roles
@@ -56,7 +61,7 @@ client.on("interactionCreate", async (interaction) => {
     console.error("[INDEX] interaction error:", err);
     try {
       if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({ content: "A apărut o eroare internă. Încearcă din nou.", ephemeral: true });
+        await interaction.reply({ content: "A apărut o eroare internă. Încearcă din nou.", flags: MessageFlags.Ephemeral });
       }
     } catch {}
   }

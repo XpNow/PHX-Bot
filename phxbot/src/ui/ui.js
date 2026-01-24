@@ -1,7 +1,8 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, EmbedBuilder } from "discord.js";
 
 export function makeEmbed(title, desc) {
-  return new EmbedBuilder().setTitle(title).setDescription(desc ?? "");
+  const safeDesc = (desc ?? "").trim();
+  return new EmbedBuilder().setTitle(title).setDescription(safeDesc || "—");
 }
 
 export function rowsFromButtons(buttons, maxPerRow=5) {
