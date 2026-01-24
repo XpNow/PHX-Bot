@@ -10,7 +10,6 @@ function addDaysIso(days) {
 export function onMemberRemove({ client, db, member }) {
   const cd = getCooldown(db, member.id, 'PK') || getCooldown(db, member.id, 'BAN');
   if (!cd) return;
-  // We don't do anything on leave; enforce on rejoin
   addAudit(db, 'MEMBER_LEFT_DURING_COOLDOWN', null, member.id, cd.last_org_id || null, { type: cd.type, expires_at: cd.expires_at });
 }
 
