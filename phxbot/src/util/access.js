@@ -10,7 +10,6 @@ export function hasRole(member, roleId) {
 export function parseUserIds(input) {
   if (!input) return [];
   const ids = new Set();
-  // split by whitespace/newlines/commas
   for (const token of input.split(/[\s,]+/).map(t=>t.trim()).filter(Boolean)) {
     const m = token.match(/^<@!?(\d+)>$/);
     if (m) ids.add(m[1]);

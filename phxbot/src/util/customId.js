@@ -1,7 +1,6 @@
 export function encodeCustomId(payload) {
   const json = JSON.stringify(payload);
   const b64 = Buffer.from(json, 'utf8').toString('base64url');
-  // Discord customId limit 100 chars: keep payload small.
   return b64.slice(0, 100);
 }
 
