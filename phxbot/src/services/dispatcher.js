@@ -661,6 +661,58 @@ function cooldownRemoveModal() {
   ]);
 }
 
+function warnAddModalForm() {
+  return modal("famenu:warn_add_modal", "Adaugă warn", [
+    input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
+    input("reason", "Motiv", undefined, true, "Ex: 2 Mafii la bătaie"),
+    input("drept_plata", "DREPT PLATA (DA/NU)", undefined, true, "DA / NU"),
+    input("sanctiune", "SANCTIUNEA OFERITA", undefined, true, "1/3 Mafia Warn")
+  ]);
+}
+
+function warnRemoveModal() {
+  return modal("famenu:warn_remove_modal", "Șterge warn", [
+    input("warn_id", "Warn ID", undefined, true, "Ex: UUID"),
+    input("reason", "Motiv (opțional)", undefined, false, "Ex: anulare")
+  ]);
+}
+
+function warnsView(ctx) {
+  const emb = makeEmbed("Warns", "Gestionare warn-uri (Supervisor/Owner).");
+  const buttons = [
+    btn("famenu:warn_add", "Adaugă warn", ButtonStyle.Primary, "➕"),
+    btn("famenu:warn_remove", "Șterge warn", ButtonStyle.Secondary, "🗑️"),
+    btn("famenu:warn_list", "Listă active", ButtonStyle.Secondary, "📋"),
+    btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️")
+  ];
+  return { emb, rows: rowsFromButtons(buttons) };
+}
+
+function cooldownsAdminView(ctx) {
+  const emb = makeEmbed("Cooldowns", "Gestionează cooldown-uri (Supervisor/Owner).");
+  const buttons = [
+    btn("famenu:cooldown_add", "Adaugă cooldown", ButtonStyle.Primary, "➕"),
+    btn("famenu:cooldown_remove", "Șterge cooldown", ButtonStyle.Secondary, "🗑️"),
+    btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️")
+  ];
+  return { emb, rows: rowsFromButtons(buttons) };
+}
+
+function cooldownAddModal() {
+  return modal("famenu:cooldown_add_modal", "Adaugă cooldown", [
+    input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
+    input("kind", "Tip (PK/BAN)", undefined, true, "PK sau BAN"),
+    input("duration", "Durată (ex: 30s, 10m, 1d, 1y)", undefined, true, "30s / 10m / 1d")
+  ]);
+}
+
+function cooldownRemoveModal() {
+  return modal("famenu:cooldown_remove_modal", "Șterge cooldown", [
+    input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
+    input("kind", "Tip (PK/BAN)", undefined, true, "PK sau BAN")
+  ]);
+}
+
 function deleteOrgModal() {
   return modal("famenu:deleteorg_modal", "Delete organizatie", [
     input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
@@ -681,6 +733,19 @@ function removeMembersModal(orgId, pk) {
 function searchModal(orgId) {
   return modal(`org:${orgId}:search_modal`, "Search player", [
     input("user", "User ID", undefined, true, "Ex: 123... / @Player"),
+  ]);
+}
+
+function reconcileOrgModal() {
+  return modal("famenu:reconcile_org_modal", "Reconcile organizație", [
+    input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
+  ]);
+}
+
+function setRankModal(orgId) {
+  return modal(`org:${orgId}:setrank_modal`, "Setează rank", [
+    input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
+    input("rank", "Rank (LEADER/COLEADER/MEMBER)", undefined, true, "Ex: COLEADER")
   ]);
 }
 
@@ -1179,6 +1244,7 @@ async function handleModal(interaction, ctx) {
     const map = {
       admin: "admin_role_id",
       supervisor: "supervisor_role_id",
+      config: "config_role_id",
       pk: "pk_role_id",
       ban: "ban_role_id",
     };
@@ -1277,172 +1343,6 @@ async function handleModal(interaction, ctx) {
     if (!ctx.settings.warn) return sendEphemeral(interaction, "Config lipsă", "Warn channel nu este setat în /famenu → Config → Canale.");
 
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const warnId = generateWarnId();
-    const createdAt = now();
-    const expiresAt = createdAt + 90 * 24 * 60 * 60 * 1000;
-    const org = repo.getOrg(ctx.db, orgId);
-    if (!org) return interaction.editReply({ embeds: [makeEmbed("Eroare", "Org ID invalid.")] });
-    const activeWarns = repo.listWarnsByStatus(ctx.db, "ACTIVE", 100).filter(w => {
-      try {
-        const payload = JSON.parse(w.payload_json || "{}");
-        return Number(w.org_id) === orgId;
-      } catch {
-        return false;
-      }
-    });
-    const totalWarn = `${Math.min(activeWarns.length + 1, WARN_MAX)}/${WARN_MAX}`;
-    const payload = {
-      org_id: orgId,
-      org_name: org.name,
-      org_role_id: org.member_role_id,
-      reason,
-      drept_plata: dreptPlata,
-      sanctiune,
-      expira_90: true,
-      created_by: ctx.uid,
-      total_warn: totalWarn
-    };
-
-    repo.createWarn(ctx.db, {
-      warn_id: warnId,
-      org_id: orgId,
-      message_id: null,
-      created_by: ctx.uid,
-      created_at: createdAt,
-      expires_at: expiresAt,
-      status: "ACTIVE",
-      payload_json: JSON.stringify(payload)
-    });
-
-    const warnEmbed = buildWarnEmbed({
-      orgName: org.name,
-      orgRoleId: org.member_role_id,
-      reason,
-      dreptPlata,
-      sanctiune,
-      expiresAt,
-      totalWarn,
-      warnId
-    });
-    const msgRes = await sendWarnMessage(ctx, warnEmbed);
-    if (!msgRes.ok) return interaction.editReply({ embeds: [makeEmbed("Eroare", msgRes.msg || "Nu pot trimite warn.")] });
-    repo.updateWarnMessageId(ctx.db, warnId, msgRes.messageId);
-    await audit(ctx, "Warn aplicat", `Organizație: **${org.name}** | Warn ID: \`${warnId}\` | Expiră: ${formatTs(expiresAt)} | De: <@${ctx.uid}>`);
-    return interaction.editReply({ embeds: [makeEmbed("Warn creat", `Warn \`${warnId}\` pentru **${org.name}** (expiră ${formatTs(expiresAt)}).`)] });
-  }
-
-  if (id === "famenu:warn_remove_modal") {
-    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona warn-uri.");
-    const warnId = interaction.fields.getTextInputValue("warn_id")?.trim();
-    const reason = interaction.fields.getTextInputValue("reason")?.trim();
-    if (!warnId) return sendEphemeral(interaction, "Eroare", "Warn ID invalid.");
-    const warn = repo.getWarn(ctx.db, warnId);
-    if (!warn) return sendEphemeral(interaction, "Eroare", "Warn ID inexistent.");
-    repo.setWarnStatus(ctx.db, warnId, "REMOVED");
-
-    if (warn.message_id && ctx.settings.warn) {
-      const ch = await ctx.guild.channels.fetch(ctx.settings.warn).catch(()=>null);
-      if (ch && ch.isTextBased()) {
-        const msg = await ch.messages.fetch(warn.message_id).catch(()=>null);
-        if (msg) {
-          const embed = msg.embeds?.[0];
-          const eb = new EmbedBuilder(embed?.data ?? {});
-          const nextDesc = setWarnStatusLine(eb.data.description || "", "Status: ✅ ȘTEARSĂ");
-          eb.setDescription(nextDesc)
-            .setColor(COLORS.ERROR)
-            .setFooter({ text: `ȘTERS • ${reason || "fără motiv"}` });
-          await msg.edit({ embeds: [eb] }).catch((err)=> {
-            console.error("[WARN] edit message failed:", err);
-          });
-        }
-      }
-    }
-
-    await audit(ctx, "Warn șters", `Warn ID: \`${warnId}\` | De: <@${ctx.uid}> | Motiv: ${reason || "-"}`);
-    return sendEphemeral(interaction, "Warn șters", `Warn \`${warnId}\` a fost marcat ca REMOVED.`);
-  }
-
-  if (id === "famenu:cooldown_add_modal") {
-    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona cooldown-uri.");
-    const userId = parseUserIds(interaction.fields.getTextInputValue("user"))[0];
-    const kindRaw = interaction.fields.getTextInputValue("kind")?.trim().toUpperCase();
-    const durationRaw = interaction.fields.getTextInputValue("duration")?.trim();
-    if (!userId) return sendEphemeral(interaction, "Eroare", "User ID invalid.");
-    if (!["PK", "BAN"].includes(kindRaw)) return sendEphemeral(interaction, "Eroare", "Tip invalid (PK/BAN).");
-    const existing = repo.getCooldown(ctx.db, userId, kindRaw);
-    if (existing && existing.expires_at > now()) {
-      return sendEphemeral(interaction, "Eroare", "Userul are deja un cooldown activ pentru acest tip.");
-    }
-    const roleId = kindRaw === "PK" ? ctx.settings.pkRole : ctx.settings.banRole;
-    if (!roleId) return sendEphemeral(interaction, "Config lipsă", `Rolul ${kindRaw} nu este setat în /famenu → Config → Roluri.`);
-    const roleCheckRes = roleCheck(ctx, roleId, kindRaw.toLowerCase());
-    if (!roleCheckRes.ok) return sendEphemeral(interaction, "Eroare", roleCheckRes.msg);
-    const durationMs = parseDurationMs(durationRaw);
-    if (!durationMs) return sendEphemeral(interaction, "Eroare", "Durată invalidă (ex: 30s, 10m, 1d, 1y).");
-    const expiresAt = now() + durationMs;
-    repo.upsertCooldown(ctx.db, userId, kindRaw, expiresAt, null, now());
-    const member = await ctx.guild.members.fetch(userId).catch(()=>null);
-    if (member) {
-      const added = await safeRoleAdd(member, roleId, `Cooldown add ${kindRaw} for ${userId}`);
-      if (!added) return sendEphemeral(interaction, "Eroare", "Nu pot aplica rolul cooldown (permisiuni lipsă).");
-    }
-    await audit(ctx, "Cooldown aplicat", `User: <@${userId}> | Tip: **${kindRaw}** | Expiră: ${formatTs(expiresAt)} | De: <@${ctx.uid}>`);
-    return sendEphemeral(interaction, "Cooldown aplicat", `User: <@${userId}> | Tip: **${kindRaw}** | Expiră: ${formatTs(expiresAt)}`);
-  }
-
-  if (id === "famenu:cooldown_remove_modal") {
-    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona cooldown-uri.");
-    const userId = parseUserIds(interaction.fields.getTextInputValue("user"))[0];
-    const kindRaw = interaction.fields.getTextInputValue("kind")?.trim().toUpperCase();
-    if (!userId) return sendEphemeral(interaction, "Eroare", "User ID invalid.");
-    if (!["PK", "BAN"].includes(kindRaw)) return sendEphemeral(interaction, "Eroare", "Tip invalid (PK/BAN).");
-    const existing = repo.getCooldown(ctx.db, userId, kindRaw);
-    if (!existing || existing.expires_at <= now()) {
-      return sendEphemeral(interaction, "Eroare", "Nu există un cooldown activ pentru acest user.");
-    }
-    const roleId = kindRaw === "PK" ? ctx.settings.pkRole : ctx.settings.banRole;
-    if (!roleId) return sendEphemeral(interaction, "Config lipsă", `Rolul ${kindRaw} nu este setat în /famenu → Config → Roluri.`);
-    const roleCheckRes = roleCheck(ctx, roleId, kindRaw.toLowerCase());
-    if (!roleCheckRes.ok) return sendEphemeral(interaction, "Eroare", roleCheckRes.msg);
-    const member = await ctx.guild.members.fetch(userId).catch(()=>null);
-    if (member) {
-      const removed = await safeRoleRemove(member, roleId, `Cooldown remove ${kindRaw} for ${userId}`);
-      if (!removed) {
-        return sendEphemeral(interaction, "Eroare", "Nu pot elimina rolul cooldown (permisiuni lipsă).");
-      }
-    }
-    repo.clearCooldown(ctx.db, userId, kindRaw);
-    await audit(ctx, "Cooldown șters", `User: <@${userId}> | Tip: **${kindRaw}** | De: <@${ctx.uid}>`);
-    return sendEphemeral(interaction, "Cooldown șters", `User: <@${userId}> | Tip: **${kindRaw}**`);
-  }
-
-  if (id === "famenu:reconcile_org_modal") {
-    if (!requireStaff(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar staff poate folosi această acțiune.");
-    const orgId = Number(interaction.fields.getTextInputValue("org_id")?.trim());
-    if (!orgId) return sendEphemeral(interaction, "Eroare", "Org ID invalid.");
-    await interaction.deferReply({ ephemeral: true });
-    const members = await fetchMembersWithRetry(ctx.guild, "RECONCILE ORG");
-    if (!members) return interaction.editReply({ embeds: [makeEmbed("Eroare", "Nu pot prelua membrii guild-ului.")] });
-    const res = await reconcileOrg(ctx, orgId, members);
-    if (!res.ok) return interaction.editReply({ embeds: [makeEmbed("Eroare", res.msg || "Reconcile eșuat.")] });
-    const summary = `Org: **${res.org.name}**\nAdded: **${res.added}**\nRemoved: **${res.removed}**`;
-    return interaction.editReply({ embeds: [makeEmbed("Reconcile org", summary)] });
-  }
-
-  if (id === "famenu:warn_add_modal") {
-    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona warn-uri.");
-    const orgId = Number(interaction.fields.getTextInputValue("org_id")?.trim());
-    const reason = interaction.fields.getTextInputValue("reason")?.trim();
-    const dreptPlataRaw = interaction.fields.getTextInputValue("drept_plata")?.trim();
-    const sanctiune = interaction.fields.getTextInputValue("sanctiune")?.trim();
-    const dreptPlata = parseYesNo(dreptPlataRaw);
-    if (!orgId) return sendEphemeral(interaction, "Eroare", "Org ID invalid.");
-    if (!reason) return sendEphemeral(interaction, "Eroare", "Motivul este obligatoriu.");
-    if (dreptPlata === null) return sendEphemeral(interaction, "Eroare", "DREPT PLATA trebuie să fie DA/NU.");
-    if (!sanctiune) return sendEphemeral(interaction, "Eroare", "Sanctiunea este obligatorie.");
-    if (!ctx.settings.warn) return sendEphemeral(interaction, "Config lipsă", "Warn channel nu este setat în /famenu → Config → Canale.");
-
-    await interaction.deferReply({ ephemeral: true });
     const warnId = generateWarnId();
     const createdAt = now();
     const expiresAt = createdAt + 90 * 24 * 60 * 60 * 1000;
