@@ -2,7 +2,8 @@ import crypto from "crypto";
 import {
   ActionRowBuilder,
   ButtonStyle,
-  EmbedBuilder
+  EmbedBuilder,
+  MessageFlags
 } from "discord.js";
 import { openDb, ensureSchema, getSetting, setSetting, getGlobal, setGlobal } from "../db/db.js";
 import * as repo from "../db/repo.js";
@@ -72,7 +73,7 @@ async function audit(ctx, title, desc) {
 
 async function sendEphemeral(interaction, title, desc, components=[]) {
   const emb = makeEmbed(title, desc);
-  const payload = { embeds: [emb], components: safeComponents(components), ephemeral: true };
+  const payload = { embeds: [emb], components: safeComponents(components), flags: MessageFlags.Ephemeral };
   if (interaction.deferred || interaction.replied) return interaction.editReply(payload);
   if (interaction.isButton?.() || interaction.isStringSelectMenu?.()) {
     return interaction.update(payload);
@@ -599,7 +600,41 @@ function warnRemoveModal() {
   ]);
 }
 
+function warnsView(ctx) {
+  const emb = makeEmbed("Warns", "Gestionare warn-uri (Supervisor/Owner).");
+  const buttons = [
+    btn("famenu:warn_add", "Adaugă warn", ButtonStyle.Primary, "➕"),
+    btn("famenu:warn_remove", "Șterge warn", ButtonStyle.Secondary, "🗑️"),
+    btn("famenu:warn_list", "Listă active", ButtonStyle.Secondary, "📋"),
+    btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️")
+  ];
+  return { emb, rows: rowsFromButtons(buttons) };
+}
 
+function cooldownsAdminView(ctx) {
+  const emb = makeEmbed("Cooldowns", "Gestionează cooldown-uri (Supervisor/Owner).");
+  const buttons = [
+    btn("famenu:cooldown_add", "Adaugă cooldown", ButtonStyle.Primary, "➕"),
+    btn("famenu:cooldown_remove", "Șterge cooldown", ButtonStyle.Secondary, "🗑️"),
+    btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️")
+  ];
+  return { emb, rows: rowsFromButtons(buttons) };
+}
+
+function cooldownAddModal() {
+  return modal("famenu:cooldown_add_modal", "Adaugă cooldown", [
+    input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
+    input("kind", "Tip (PK/BAN)", undefined, true, "PK sau BAN"),
+    input("duration", "Durată (ex: 30s, 10m, 1d, 1y)", undefined, true, "30s / 10m / 1d")
+  ]);
+}
+
+function cooldownRemoveModal() {
+  return modal("famenu:cooldown_remove_modal", "Șterge cooldown", [
+    input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
+    input("kind", "Tip (PK/BAN)", undefined, true, "PK sau BAN")
+  ]);
+}
 
 function deleteOrgModal() {
   return modal("famenu:deleteorg_modal", "Delete organizatie", [
@@ -630,13 +665,18 @@ function reconcileOrgModal() {
   ]);
 }
 
-function setRankModal(orgId) {
-  return modal(`org:${orgId}:setrank_modal`, "Setează rank", [
-    input("user", "User ID", undefined, true, "Ex: 123... / @Player"),
-    input("rank", "Rank (LEADER/COLEADER/MEMBER)", undefined, true, "Ex: COLEADER")
+function reconcileOrgModal() {
+  return modal("famenu:reconcile_org_modal", "Reconcile organizație", [
+    input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
   ]);
 }
 
+function setRankModal(orgId) {
+  return modal(`org:${orgId}:setrank_modal`, "Setează rank", [
+    input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
+    input("rank", "Rank (LEADER/COLEADER/MEMBER)", undefined, true, "Ex: COLEADER")
+  ]);
+}
 
 async function handleFalert(interaction, ctx) {
   const loc = interaction.options.getString("locatie", true);
@@ -1549,6 +1589,64 @@ async function handleComponent(interaction, ctx) {
   if (id === "famenu:warn_add") {
     if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona warn-uri.");
     return showModalSafe(interaction, warnAddModal());
+  }
+  if (id === "famenu:warn_remove") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona warn-uri.");
+    return showModalSafe(interaction, warnRemoveModal());
+  }
+  if (id === "famenu:warn_list") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona warn-uri.");
+    const warns = repo.listWarnsByStatus(ctx.db, "ACTIVE", 10);
+    const desc = warns.length
+      ? warns.map(w => {
+        let payload = {};
+        try { payload = JSON.parse(w.payload_json); } catch {}
+        const orgLabel = payload.org_role_id ? `<@&${payload.org_role_id}>` : (payload.org_name || `Org ${w.org_id || "-"}`);
+        const exp = w.expires_at ? formatTs(w.expires_at) : "—";
+        return `• \`${w.warn_id}\` | ${orgLabel} | Expiră: ${exp}`;
+      }).join("\n")
+      : "Nu există warn-uri active.";
+    const emb = makeEmbed("⚠️ Warns active", desc);
+    return sendEphemeral(interaction, emb.data.title, emb.data.description, rowsFromButtons([btn("famenu:back","Back",ButtonStyle.Secondary,"⬅️")]));
+  }
+  if (id === "famenu:cooldown_add") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona cooldown-uri.");
+    return showModalSafe(interaction, cooldownAddModal());
+  }
+  if (id === "famenu:cooldown_remove") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona cooldown-uri.");
+    return showModalSafe(interaction, cooldownRemoveModal());
+  }
+
+  if (id === "famenu:reconcile_global") {
+    if (!requireStaff(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar staff poate folosi această acțiune.");
+    await interaction.deferReply({ ephemeral: true });
+    const members = await fetchMembersWithRetry(ctx.guild, "RECONCILE GLOBAL");
+    if (!members) return interaction.editReply({ embeds: [makeEmbed("Eroare", "Nu pot prelua membrii guild-ului.")] });
+    let added = 0;
+    let removed = 0;
+    for (const org of repo.listOrgs(ctx.db)) {
+      const res = await reconcileOrg(ctx, org.id, members);
+      if (res.ok) {
+        added += res.added;
+        removed += res.removed;
+      }
+    }
+    const cdRes = await reconcileCooldownRoles(ctx, members);
+    const summary = [
+      `Organizații: +${added}/-${removed}`,
+      cdRes.ok ? `Cooldowns: PK +${cdRes.pkAdded}/-${cdRes.pkRemoved} | BAN +${cdRes.banAdded}/-${cdRes.banRemoved}` : "Cooldowns: eroare"
+    ].join("\n");
+    return interaction.editReply({ embeds: [makeEmbed("Reconcile global", summary)] });
+  }
+  if (id === "famenu:reconcile_org") {
+    if (!requireStaff(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar staff poate folosi această acțiune.");
+    return showModalSafe(interaction, reconcileOrgModal());
+  }
+
+  if (id === "famenu:warn_add") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona warn-uri.");
+    return showModalSafe(interaction, warnAddModalForm());
   }
   if (id === "famenu:warn_remove") {
     if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona warn-uri.");

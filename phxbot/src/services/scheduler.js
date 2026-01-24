@@ -4,8 +4,21 @@ import { EmbedBuilder } from 'discord.js';
 import { COLORS } from '../ui/theme.js';
 
 export function runSchedulers({ client, db }) {
-  setInterval(() => tick({ client, db }).catch(() => {}), 60 * 1000);
-  tick({ client, db }).catch(() => {});
+  // every 60s
+  setInterval(() => tick({ client, db }).catch((err) => console.error("[SCHEDULER] tick failed:", err)), 60 * 1000);
+  // immediate
+  tick({ client, db }).catch((err) => console.error("[SCHEDULER] initial tick failed:", err));
+}
+
+function setWarnStatusLine(description, statusLine) {
+  const lines = description ? description.split("\n") : [];
+  const idx = lines.findIndex(line => line.startsWith("Status:"));
+  if (idx >= 0) {
+    lines[idx] = statusLine;
+  } else {
+    lines.push(statusLine);
+  }
+  return lines.join("\n");
 }
 
 function setWarnStatusLine(description, statusLine) {
