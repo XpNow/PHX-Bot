@@ -25,7 +25,6 @@ export async function sendFalert({ client, db, interaction, actor, locatie, deta
     }
   }
 
-  // Determine channel to post: use AUDIT_CHANNEL_ID as default for alerts, or a separate key
   const alertChannelId = getSetting(db, 'ALERT_CHANNEL_ID', '') || getSetting(db, 'AUDIT_CHANNEL_ID', '');
   if (!alertChannelId) {
     return { content: 'ALERT_CHANNEL_ID/AUDIT_CHANNEL_ID nu este setat in config.', ephemeral: true };
@@ -36,7 +35,6 @@ export async function sendFalert({ client, db, interaction, actor, locatie, deta
     return { content: 'Canalul de alerta este invalid sau nu e text.', ephemeral: true };
   }
 
-  // Ping all mafia org base roles (2 pings separate)
   const mafiaOrgs = listOrgs(db, 'MAFIA');
   const roleMentions = mafiaOrgs
     .filter(o => o.base_role_id)
@@ -54,10 +52,8 @@ export async function sendFalert({ client, db, interaction, actor, locatie, deta
     .setFooter({ text: `Global cooldown activ: ${cdMin} min` })
     .setTimestamp(new Date());
 
-  // send pings in two separate messages (requirement)
   const pingText = roleMentions.join(' ');
   if (pingText) {
-    await channel.send({ content: pingText }).catch(() => {});
     await channel.send({ content: pingText }).catch(() => {});
   }
   await channel.send({ embeds: [embed] }).catch(() => {});

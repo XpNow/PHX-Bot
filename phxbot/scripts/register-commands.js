@@ -1,3 +1,9 @@
+import dotenv from "dotenv";
+import path from "path";
+
+dotenv.config({ path: path.join(process.cwd(), ".env") });
+
+
 import { REST, Routes, SlashCommandBuilder } from "discord.js";
 
 const token = process.env.DISCORD_TOKEN;

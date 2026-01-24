@@ -4,9 +4,7 @@ import { EmbedBuilder } from 'discord.js';
 import { COLORS } from '../ui/theme.js';
 
 export function runSchedulers({ client, db }) {
-  // every 60s
   setInterval(() => tick({ client, db }).catch(() => {}), 60 * 1000);
-  // immediate
   tick({ client, db }).catch(() => {});
 }
 
@@ -73,7 +71,6 @@ async function tick({ client, db }) {
           }
           setWarnStatus(db, w.warn_id, 'EXPIRED');
         } catch {
-          // ignore
         }
       }
 
