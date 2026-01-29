@@ -23,7 +23,7 @@ const client = new Client({
 const schedulerDb = openDb();
 ensureSchema(schedulerDb);
 
-client.once("clientReady", () => {
+client.once("ready", () => {
   console.log(`[INDEX] Logged in as ${client.user.tag}`);
   runSchedulers({ client, db: schedulerDb });
 });

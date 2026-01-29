@@ -1,7 +1,12 @@
-import { listExpiringCooldowns, listExpiringWarns, setWarnStatus, clearCooldown } from '../db/repo.js';
+import { listExpiringCooldowns, listExpiringWarns, setWarnStatus, clearCooldown, listCooldowns, upsertCooldown } from '../db/repo.js';
 import { getSetting } from '../db/db.js';
 import { EmbedBuilder } from 'discord.js';
 import { COLORS } from '../ui/theme.js';
+
+const DRIFT_CHECK_MS = 10 * 60 * 1000;
+const PK_MS = 3 * 24 * 60 * 60 * 1000;
+const BAN_MS_DEFAULT = 30 * 24 * 60 * 60 * 1000;
+let lastDriftCheck = 0;
 
 export function runSchedulers({ client, db }) {
   // every 60s
@@ -77,6 +82,69 @@ async function tick({ client, db }) {
         }
       }
 
+    }
+  }
+
+  const nowTs = Date.now();
+  if (nowTs - lastDriftCheck >= DRIFT_CHECK_MS) {
+    lastDriftCheck = nowTs;
+    await driftCheckCooldownRoles({ guild, db, nowTs });
+  }
+}
+
+async function driftCheckCooldownRoles({ guild, db, nowTs }) {
+  const pkRole = getSetting(db, 'pk_role_id');
+  const banRole = getSetting(db, 'ban_role_id');
+  if (!pkRole && !banRole) return;
+
+  let members;
+  try {
+    members = await guild.members.fetch();
+  } catch (err) {
+    console.error('[SCHEDULER] cooldown drift fetch failed:', err);
+    return;
+  }
+
+  const pkRows = listCooldowns(db, 'PK');
+  const banRows = listCooldowns(db, 'BAN');
+  const pkMap = new Map(pkRows.map(r => [r.user_id, r]));
+  const banMap = new Map(banRows.map(r => [r.user_id, r]));
+
+  if (pkRole) {
+    for (const row of pkRows) {
+      if (row.expires_at <= nowTs) continue;
+      const member = members.get(row.user_id);
+      if (member && !member.roles.cache.has(pkRole)) {
+        await member.roles.add(pkRole).catch((err) => {
+          console.error(`[SCHEDULER] PK drift add failed for ${row.user_id}:`, err);
+        });
+      }
+    }
+    for (const member of members.values()) {
+      if (!member.roles.cache.has(pkRole)) continue;
+      if (!pkMap.has(member.id)) {
+        const expiresAt = nowTs + PK_MS;
+        upsertCooldown(db, member.id, 'PK', expiresAt, null, nowTs);
+      }
+    }
+  }
+
+  if (banRole) {
+    for (const row of banRows) {
+      if (row.expires_at <= nowTs) continue;
+      const member = members.get(row.user_id);
+      if (member && !member.roles.cache.has(banRole)) {
+        await member.roles.add(banRole).catch((err) => {
+          console.error(`[SCHEDULER] BAN drift add failed for ${row.user_id}:`, err);
+        });
+      }
+    }
+    for (const member of members.values()) {
+      if (!member.roles.cache.has(banRole)) continue;
+      if (!banMap.has(member.id)) {
+        const expiresAt = nowTs + BAN_MS_DEFAULT;
+        upsertCooldown(db, member.id, 'BAN', expiresAt, null, nowTs);
+      }
     }
   }
 }

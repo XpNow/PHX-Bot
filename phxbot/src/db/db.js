@@ -9,6 +9,7 @@ export function openDb() {
 
   const db = new Database(dbPath);
   db.pragma("journal_mode = WAL");
+  db.pragma("busy_timeout = 5000");
   return db;
 }
 
@@ -56,7 +57,6 @@ export function ensureSchema(db) {
     status TEXT NOT NULL,
     payload_json TEXT NOT NULL
   );
-  CREATE TABLE IF NOT EXISTS global_state (key TEXT PRIMARY KEY, value TEXT);
   `);
 
   function ensureColumn(table, column, ddl) {
@@ -79,7 +79,6 @@ export function ensureSchema(db) {
   // Defaults
   const defaults = [
     ["audit_channel_id", ""],
-    ["alert_channel_id", ""],
     ["warn_channel_id", ""],
     ["bot_channel_id", ""],
     ["admin_role_id", ""],
@@ -101,10 +100,3 @@ export function setSetting(db, key, value) {
   db.prepare("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(key, value ?? "");
 }
 
-export function getGlobal(db, key) {
-  const row = db.prepare("SELECT value FROM global_state WHERE key=?").get(key);
-  return row?.value ?? "";
-}
-export function setGlobal(db, key, value) {
-  db.prepare("INSERT INTO global_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(key, value ?? "");
-}

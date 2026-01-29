@@ -68,10 +68,6 @@ export function fmenuRootPanel({ ctx, stats = null }) {
         { label: 'Search Player', value: 'org:search', emoji: '🔎' }
       );
 
-    if (ctx.org.type === 'MAFIA') {
-      select.addOptions({ label: 'Falert', value: 'org:falert', emoji: '🚨' });
-    }
-
     return { embeds: [embed], components: [new ActionRowBuilder().addComponents(select)] };
   }
 

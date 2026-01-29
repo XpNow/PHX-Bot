@@ -19,7 +19,6 @@ npm start
 ## Commands
 - `/famenu` = admin hub (Owner/Admin/Supervisor). Owner can set config.
 - `/fmenu` = organization menu (Leader/Co-Leader + org role).
-- `/falert` = raid alert (global cooldown 30 min).
 
 ## Important
 Bot must have permissions:

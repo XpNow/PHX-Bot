@@ -62,15 +62,10 @@ CREATE TABLE IF NOT EXISTS warns (
   payload_json TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS global_state (
-  key TEXT PRIMARY KEY,
-  value TEXT
-);
 `);
 
 const defaults = [
   ["audit_channel_id", ""],
-  ["alert_channel_id", ""],
   ["warn_channel_id", ""],
   ["bot_channel_id", ""],
   ["admin_role_id", ""],

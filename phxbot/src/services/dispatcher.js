@@ -5,14 +5,13 @@ import {
   EmbedBuilder,
   MessageFlags
 } from "discord.js";
-import { openDb, ensureSchema, getSetting, setSetting, getGlobal, setGlobal } from "../db/db.js";
+import { openDb, ensureSchema, getSetting, setSetting } from "../db/db.js";
 import * as repo from "../db/repo.js";
 import { isOwner, hasRole, parseUserIds, humanKind } from "../util/access.js";
 import { makeEmbed, btn, rowsFromButtons, safeComponents, select, modal, input } from "../ui/ui.js";
 import { COLORS } from "../ui/theme.js";
 
 const PK_MS = 3 * 24 * 60 * 60 * 1000;
-const ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 const WARN_MAX = 3;
 const ROSTER_CACHE_MS = 30 * 1000;
 const rosterCache = new Map();
@@ -38,7 +37,6 @@ function getCtx(interaction) {
 
   const settings = {
     audit: getSetting(db, "audit_channel_id"),
-    alert: getSetting(db, "alert_channel_id"),
     warn: getSetting(db, "warn_channel_id"),
     botChannel: getSetting(db, "bot_channel_id"),
     adminRole: getSetting(db, "admin_role_id"),
@@ -431,7 +429,6 @@ function configIssues(ctx) {
   const issues = [];
   const channelChecks = [
     ["audit", ctx.settings.audit],
-    ["alert", ctx.settings.alert],
     ["warn", ctx.settings.warn],
     ["bot", ctx.settings.botChannel]
   ];
@@ -466,7 +463,6 @@ function configChannelsView(ctx) {
   const emb = makeEmbed("Config — Canale", "Owner/Config. Setează canalele botului.");
   const lines = [
     `Audit: ${ctx.settings.audit ? `<#${ctx.settings.audit}>` : "(unset)"}`,
-    `Alert: ${ctx.settings.alert ? `<#${ctx.settings.alert}>` : "(unset)"}`,
     `Warn: ${ctx.settings.warn ? `<#${ctx.settings.warn}>` : "(unset)"}`,
     `Bot Channel: ${ctx.settings.botChannel ? `<#${ctx.settings.botChannel}>` : "(unset)"}`
   ];
@@ -474,7 +470,6 @@ function configChannelsView(ctx) {
 
   const buttons = [
     btn("famenu:setchannel:audit", "Set Audit", ButtonStyle.Secondary),
-    btn("famenu:setchannel:alert", "Set Alert", ButtonStyle.Secondary),
     btn("famenu:setchannel:warn", "Set Warn", ButtonStyle.Secondary),
     btn("famenu:setchannel:bot", "Set Bot Channel", ButtonStyle.Secondary),
     btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️"),
@@ -654,51 +649,6 @@ function setRankModal(orgId) {
     input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
     input("rank", "Rank (LEADER/COLEADER/MEMBER)", undefined, true, "Ex: COLEADER")
   ]);
-}
-
-async function handleFalert(interaction, ctx) {
-  const loc = interaction.options.getString("locatie", true);
-  const last = Number(getGlobal(ctx.db, "falert_last_ts") || "0");
-  const left = last + ALERT_COOLDOWN_MS - now();
-  if (left > 0) {
-    const mins = Math.ceil(left / 60000);
-    return sendEphemeral(interaction, "⏳ Cooldown global", `Comanda e pe cooldown. Mai încearcă în ~${mins} minute.`);
-  }
-  const illegalOrgs = repo.listOrgs(ctx.db).filter(org => org.kind === "ILLEGAL");
-  const hasIllegalRole = illegalOrgs.some(org => hasRole(ctx.member, org.member_role_id));
-  if (!hasIllegalRole && !ctx.perms.staff) {
-    return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar membrii organizațiilor ILLEGAL pot folosi /falert.");
-  }
-  // ping in alert channel
-  const alertChId = ctx.settings.alert;
-  if (!alertChId) return sendEphemeral(interaction, "Config lipsă", "Alert channel nu este setat în /famenu → Config → Canale.");
-  const ch = await ctx.guild.channels.fetch(alertChId).catch((err)=> {
-    console.error("[FALERT] fetch channel failed:", err);
-    return null;
-  });
-  if (!ch || !ch.isTextBased()) return sendEphemeral(interaction, "Eroare", "Nu pot accesa alert channel. Verifică ID-ul/perms.");
-
-  const orgs = illegalOrgs;
-  if (!orgs.length) {
-    return sendEphemeral(interaction, "Fără organizații ILLEGAL", "Nu există organizații ILLEGAL configurate pentru alertă.");
-  }
-
-  const roleIds = [...new Set(orgs.map(org => org.member_role_id).filter(Boolean))];
-  if (!roleIds.length) {
-    return sendEphemeral(interaction, "Roluri lipsă", "Organizațiile ILLEGAL nu au roluri configurate pentru ping.");
-  }
-
-  setGlobal(ctx.db, "falert_last_ts", String(now()));
-  // ping roles: use member_role_id for all orgs
-  const pings = roleIds.map(roleId => `<@&${roleId}>`).join(" ");
-  try {
-    await ch.send(`🚨 **ALERTĂ RAZIE**: ${loc}\n${pings}\n${pings}`);
-  } catch (err) {
-    console.error("[FALERT] send failed:", err);
-    return sendEphemeral(interaction, "Eroare", "Nu pot trimite alerta. Verifică permisiunile botului.");
-  }
-  await audit(ctx, "ALERTĂ RAZIE", `Locație: ${loc}\nDe: <@${ctx.uid}>`);
-  return sendEphemeral(interaction, "Trimis", `Alerta a fost trimisă în <#${alertChId}>.`);
 }
 
 async function reconcileOrg(ctx, orgId, members) {
@@ -1154,7 +1104,7 @@ async function handleModal(interaction, ctx) {
     if (!requireConfigManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar owner sau rolul de config poate schimba canalele.");
     const which = id.split(":")[2];
     const channelId = interaction.fields.getTextInputValue("channel_id")?.replace(/[<#>]/g,"").trim();
-    const map = { audit: "audit_channel_id", alert: "alert_channel_id", warn: "warn_channel_id", bot: "bot_channel_id" };
+    const map = { audit: "audit_channel_id", warn: "warn_channel_id", bot: "bot_channel_id" };
     const key = map[which];
     if (!key || !channelId) return sendEphemeral(interaction, "Eroare", "Channel ID invalid.");
     const channel = ctx.guild.channels.cache.get(channelId);
@@ -1642,10 +1592,6 @@ export async function handleInteraction(interaction, client) {
     }
     if (interaction.commandName === "famenu") {
       await famenuHome(interaction, ctx);
-      return;
-    }
-    if (interaction.commandName === "falert") {
-      await handleFalert(interaction, ctx);
       return;
     }
   }

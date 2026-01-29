@@ -1,4 +1,4 @@
-import { REST, Routes, SlashCommandBuilder } from "discord.js";
+import { REST, Routes, SlashCommandBuilder, PermissionsBitField } from "discord.js";
 
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.DISCORD_CLIENT_ID;
@@ -15,11 +15,8 @@ const commands = [
     .setDescription("Meniu organizatie (Lider/Co-Lider)."),
   new SlashCommandBuilder()
     .setName("famenu")
-    .setDescription("Meniu administrare (Owner/Admin/Supervisor)."),
-  new SlashCommandBuilder()
-    .setName("falert")
-    .setDescription("Alerta razie (cooldown global 30 min).")
-    .addStringOption(o=>o.setName("locatie").setDescription("Unde e razia?").setRequired(true))
+    .setDescription("Meniu administrare (Owner/Admin/Supervisor).")
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
 ].map(c=>c.toJSON());
 
 const rest = new REST({ version: "10" }).setToken(token);
