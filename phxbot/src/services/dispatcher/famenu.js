@@ -319,7 +319,8 @@ function configWatchdogView(ctx) {
   ].join("\n"));
 
   const buttons = [
-    btn("famenu:config:watchdog:set", "Set watchdog", ButtonStyle.Secondary, "🛡️"),
+    btn("famenu:config:watchdog:set:core", "Set core", ButtonStyle.Secondary, "🛡️"),
+    btn("famenu:config:watchdog:set:drift", "Set drift", ButtonStyle.Secondary, "📉"),
     btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️"),
   ];
   return { emb, rows: rowsFromButtons(buttons) };
@@ -377,7 +378,8 @@ function configAdvancedView(ctx) {
   ].join("\n"));
 
   const buttons = [
-    btn("famenu:config:advanced:set", "Set advanced", ButtonStyle.Secondary, "🧰"),
+    btn("famenu:config:advanced:set:core", "Set advanced", ButtonStyle.Secondary, "🧰"),
+    btn("famenu:config:advanced:set:dedupe", "Set transfer dedupe", ButtonStyle.Secondary, "🧪"),
     btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️"),
   ];
   return { emb, rows: rowsFromButtons(buttons) };
@@ -536,12 +538,17 @@ function brandingSettingsModal() {
   ]);
 }
 
-function watchdogSettingsModal() {
-  return modal("famenu:config_watchdog_modal", "Set watchdog", [
+function watchdogCoreSettingsModal() {
+  return modal("famenu:config_watchdog_core_modal", "Set watchdog (core)", [
     input("enabled", "Activ (true/false)", undefined, true, "true"),
     input("interval_min", "Interval (minute, min 5)", undefined, true, "30"),
     input("startup_delay", "Startup delay (ex: 5s, 1m)", undefined, true, "5s"),
-    input("accept_offline", "Accept offline removals (true/false)", undefined, true, "true"),
+    input("accept_offline", "Accept offline removals (true/false)", undefined, true, "true")
+  ]);
+}
+
+function watchdogDriftSettingsModal() {
+  return modal("famenu:config_watchdog_drift_modal", "Set watchdog (drift)", [
     input("drift_logs", "Drift logs (true/false)", undefined, true, "true"),
     input("drift_sample", "Drift sample (număr)", undefined, true, "12")
   ]);
@@ -560,13 +567,18 @@ function roleQueueSettingsModal() {
   ]);
 }
 
-function advancedSettingsModal() {
-  return modal("famenu:config_advanced_modal", "Set avansat", [
+function advancedCoreSettingsModal() {
+  return modal("famenu:config_advanced_core_modal", "Set avansat", [
     input("stale_days", "Stale membership days", undefined, true, "14"),
     input("pk_backfill", "PK backfill default (ex: 3d)", undefined, true, "3d"),
     input("ban_backfill", "BAN backfill default (ex: 30d)", undefined, true, "30d"),
     input("audit_window", "Audit index window (ex: 120s)", undefined, true, "120s"),
-    input("audit_limit", "Audit index limit", undefined, true, "50"),
+    input("audit_limit", "Audit index limit", undefined, true, "50")
+  ]);
+}
+
+function advancedTransferDedupeModal() {
+  return modal("famenu:config_advanced_dedupe_modal", "Set transfer dedupe", [
     input("transfer_dedupe", "Transfer fail dedupe (ex: 120s)", undefined, true, "120s")
   ]);
 }
@@ -1118,9 +1130,13 @@ export async function handleFamenuComponent(interaction, ctx) {
     if (!requireConfigManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar owner sau rolul de config.");
     return showModalSafe(interaction, brandingSettingsModal());
   }
-  if (id === "famenu:config:watchdog:set") {
+  if (id === "famenu:config:watchdog:set:core") {
     if (!requireConfigManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar owner sau rolul de config.");
-    return showModalSafe(interaction, watchdogSettingsModal());
+    return showModalSafe(interaction, watchdogCoreSettingsModal());
+  }
+  if (id === "famenu:config:watchdog:set:drift") {
+    if (!requireConfigManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar owner sau rolul de config.");
+    return showModalSafe(interaction, watchdogDriftSettingsModal());
   }
   if (id === "famenu:config:runtime:set") {
     if (!requireConfigManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar owner sau rolul de config.");
@@ -1130,9 +1146,13 @@ export async function handleFamenuComponent(interaction, ctx) {
     if (!requireConfigManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar owner sau rolul de config.");
     return showModalSafe(interaction, roleQueueSettingsModal());
   }
-  if (id === "famenu:config:advanced:set") {
+  if (id === "famenu:config:advanced:set:core") {
     if (!requireConfigManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar owner sau rolul de config.");
-    return showModalSafe(interaction, advancedSettingsModal());
+    return showModalSafe(interaction, advancedCoreSettingsModal());
+  }
+  if (id === "famenu:config:advanced:set:dedupe") {
+    if (!requireConfigManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar owner sau rolul de config.");
+    return showModalSafe(interaction, advancedTransferDedupeModal());
   }
   if (id === "famenu:config:syncpol:set") {
     if (!requireConfigManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar owner sau rolul de config.");
@@ -1412,14 +1432,12 @@ export async function handleFamenuModal(interaction, ctx) {
     return sendEphemeral(interaction, view.emb.data.title, view.emb.data.description, view.rows);
   }
 
-  if (id === "famenu:config_watchdog_modal") {
+  if (id === "famenu:config_watchdog_core_modal") {
     if (!requireConfigManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar owner sau rolul de config.");
     const enabledRaw = interaction.fields.getTextInputValue("enabled");
     const intervalRaw = interaction.fields.getTextInputValue("interval_min");
     const startupDelayRaw = interaction.fields.getTextInputValue("startup_delay");
     const acceptOfflineRaw = interaction.fields.getTextInputValue("accept_offline");
-    const driftLogsRaw = interaction.fields.getTextInputValue("drift_logs");
-    const driftSampleRaw = interaction.fields.getTextInputValue("drift_sample");
 
     const enabled = parseBoolInput(enabledRaw, "Activ");
     if (!enabled.ok) return sendEphemeral(interaction, "Eroare", enabled.msg);
@@ -1431,23 +1449,38 @@ export async function handleFamenuModal(interaction, ctx) {
     }
     const acceptOffline = parseBoolInput(acceptOfflineRaw, "Accept offline removals");
     if (!acceptOffline.ok) return sendEphemeral(interaction, "Eroare", acceptOffline.msg);
-    const driftLogs = parseBoolInput(driftLogsRaw, "Drift logs");
-    if (!driftLogs.ok) return sendEphemeral(interaction, "Eroare", driftLogs.msg);
-    const driftSample = parseIntInput(driftSampleRaw, "Drift sample", { min: 1, max: 200 });
-    if (!driftSample.ok) return sendEphemeral(interaction, "Eroare", driftSample.msg);
 
     setSetting(ctx.db, "watchdog_enabled", String(enabled.value));
     setSetting(ctx.db, "watchdog_interval_min", String(interval.value));
     setSetting(ctx.db, "watchdog_startup_delay_ms", String(startupDelayMs));
     setSetting(ctx.db, "watchdog_accept_offline_role_removal", String(acceptOffline.value));
-    setSetting(ctx.db, "watchdog_drift_logs", String(driftLogs.value));
-    setSetting(ctx.db, "watchdog_drift_sample", String(driftSample.value));
 
-    await audit(ctx, "⚙️ Config watchdog", [
+    await audit(ctx, "⚙️ Config watchdog (core)", [
       `**Activ:** ${enabled.value ? "DA" : "NU"}`,
       `**Interval:** ${interval.value} min`,
       `**Startup delay:** ${fmtDurationMs(startupDelayMs)}`,
       `**Accept offline removals:** ${acceptOffline.value ? "DA" : "NU"}`,
+      `**De către:** <@${ctx.uid}>`
+    ].join("\n"), COLORS.GLOBAL);
+
+    const view = configWatchdogView(ctx);
+    return sendEphemeral(interaction, view.emb.data.title, view.emb.data.description, view.rows);
+  }
+
+  if (id === "famenu:config_watchdog_drift_modal") {
+    if (!requireConfigManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar owner sau rolul de config.");
+    const driftLogsRaw = interaction.fields.getTextInputValue("drift_logs");
+    const driftSampleRaw = interaction.fields.getTextInputValue("drift_sample");
+
+    const driftLogs = parseBoolInput(driftLogsRaw, "Drift logs");
+    if (!driftLogs.ok) return sendEphemeral(interaction, "Eroare", driftLogs.msg);
+    const driftSample = parseIntInput(driftSampleRaw, "Drift sample", { min: 1, max: 200 });
+    if (!driftSample.ok) return sendEphemeral(interaction, "Eroare", driftSample.msg);
+
+    setSetting(ctx.db, "watchdog_drift_logs", String(driftLogs.value));
+    setSetting(ctx.db, "watchdog_drift_sample", String(driftSample.value));
+
+    await audit(ctx, "⚙️ Config watchdog (drift)", [
       `**Drift logs:** ${driftLogs.value ? "DA" : "NU"}`,
       `**Drift sample:** ${driftSample.value}`,
       `**De către:** <@${ctx.uid}>`
@@ -1498,14 +1531,13 @@ export async function handleFamenuModal(interaction, ctx) {
     return sendEphemeral(interaction, view.emb.data.title, view.emb.data.description, view.rows);
   }
 
-  if (id === "famenu:config_advanced_modal") {
+  if (id === "famenu:config_advanced_core_modal") {
     if (!requireConfigManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar owner sau rolul de config.");
     const staleDaysRaw = interaction.fields.getTextInputValue("stale_days");
     const pkBackfillRaw = interaction.fields.getTextInputValue("pk_backfill");
     const banBackfillRaw = interaction.fields.getTextInputValue("ban_backfill");
     const auditWindowRaw = interaction.fields.getTextInputValue("audit_window");
     const auditLimitRaw = interaction.fields.getTextInputValue("audit_limit");
-    const transferDedupeRaw = interaction.fields.getTextInputValue("transfer_dedupe");
 
     const staleDays = parseIntInput(staleDaysRaw, "Stale membership days", { min: 1, max: 365 });
     if (!staleDays.ok) return sendEphemeral(interaction, "Eroare", staleDays.msg);
@@ -1517,15 +1549,12 @@ export async function handleFamenuModal(interaction, ctx) {
     if (!auditWindowMs) return sendEphemeral(interaction, "Eroare", "Audit window invalid (ex: 120s).");
     const auditLimit = parseIntInput(auditLimitRaw, "Audit index limit", { min: 10, max: 200 });
     if (!auditLimit.ok) return sendEphemeral(interaction, "Eroare", auditLimit.msg);
-    const transferDedupeMs = parseDurationMs(transferDedupeRaw || "");
-    if (!transferDedupeMs) return sendEphemeral(interaction, "Eroare", "Transfer dedupe invalid (ex: 120s).");
 
     setSetting(ctx.db, "stale_membership_days", String(staleDays.value));
     setSetting(ctx.db, "pk_backfill_default_ms", String(pkBackfillMs));
     setSetting(ctx.db, "ban_backfill_default_ms", String(banBackfillMs));
     setSetting(ctx.db, "audit_index_window_ms", String(auditWindowMs));
     setSetting(ctx.db, "audit_index_limit", String(auditLimit.value));
-    setSetting(ctx.db, "transfer_fail_audit_dedupe_ms", String(transferDedupeMs));
 
     await audit(ctx, "⚙️ Config avansat", [
       `**Stale membership days:** ${staleDays.value}`,
@@ -1533,6 +1562,22 @@ export async function handleFamenuModal(interaction, ctx) {
       `**BAN backfill:** ${fmtDurationMs(banBackfillMs)}`,
       `**Audit window:** ${fmtDurationMs(auditWindowMs)}`,
       `**Audit limit:** ${auditLimit.value}`,
+      `**De către:** <@${ctx.uid}>`
+    ].join("\n"), COLORS.GLOBAL);
+
+    const view = configAdvancedView(ctx);
+    return sendEphemeral(interaction, view.emb.data.title, view.emb.data.description, view.rows);
+  }
+
+  if (id === "famenu:config_advanced_dedupe_modal") {
+    if (!requireConfigManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar owner sau rolul de config.");
+    const transferDedupeRaw = interaction.fields.getTextInputValue("transfer_dedupe");
+    const transferDedupeMs = parseDurationMs(transferDedupeRaw || "");
+    if (!transferDedupeMs) return sendEphemeral(interaction, "Eroare", "Transfer dedupe invalid (ex: 120s).");
+
+    setSetting(ctx.db, "transfer_fail_audit_dedupe_ms", String(transferDedupeMs));
+
+    await audit(ctx, "⚙️ Config avansat (transfer dedupe)", [
       `**Transfer dedupe:** ${fmtDurationMs(transferDedupeMs)}`,
       `**De către:** <@${ctx.uid}>`
     ].join("\n"), COLORS.GLOBAL);

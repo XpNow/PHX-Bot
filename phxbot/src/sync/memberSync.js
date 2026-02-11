@@ -149,40 +149,42 @@ export async function syncMemberOrgsDiscordToDb({ db, guild, member, audit }) {
 
   if (hits.length === 0) {
     const prev = repo.getMembership(db, member.id);
-    if (prev) {
-      const acceptManual = settingBool(db, "accept_manual_org_role_changes", false);
-      if (acceptManual) {
-        repo.removeMembership(db, member.id);
-        await audit?.(
-          "🧭 Schimbare manuală rol org",
-          [
-            `**Țintă:** <@${member.id}> (\`${member.id}\`)`,
-            `**Rol schimbat:** role org lipsă în Discord`,
-            `**Decizie:** **ACCEPTED by policy**`,
-            `**Policy:** accept_manual_org_role_changes=true`,
-            `**Executor:** necunoscut`
-          ].join("\n")
-        );
-      } else {
-        const org = repo.getOrg(db, prev.org_id);
-        const roleId = org?.member_role_id ? String(org.member_role_id) : null;
-        if (roleId) {
-          const res = await enqueueRoleOp({ member, roleId, action: "add", context: "org:manual-change:revert" });
-          await audit?.(
-            "🧭 Schimbare manuală rol org",
-            [
-              `**Țintă:** <@${member.id}> (\`${member.id}\`)`,
-              `**Rol:** <@&${roleId}>`,
-              `**Decizie:** **REVERTED by policy**`,
-              `**Policy:** accept_manual_org_role_changes=false`,
-              `**Executor:** necunoscut`,
-              `**Rezultat:** ${fmtOpResult(res)}`
-            ].join("\n")
-          );
-        }
-      }
+    if (!prev) return { ok: true, action: "NOOP", prevOrgId: null };
+
+    const acceptManual = settingBool(db, "accept_manual_org_role_changes", false);
+    if (acceptManual) {
+      repo.removeMembership(db, member.id);
+      await audit?.(
+        "🧭 Schimbare manuală rol org",
+        [
+          `**Țintă:** <@${member.id}> (\`${member.id}\`)`,
+          `**Rol schimbat:** role org lipsă în Discord`,
+          `**Decizie:** **ACCEPTED by policy**`,
+          `**Policy:** accept_manual_org_role_changes=true`,
+          `**Executor:** necunoscut`
+        ].join("\n")
+      );
+      return { ok: true, action: "DB_REMOVE", prevOrgId: prev.org_id };
     }
-    return { ok: true, action: prev ? "DB_REMOVE" : "NOOP", prevOrgId: prev?.org_id ?? null };
+
+    const prevOrg = repo.getOrg(db, prev.org_id);
+    const prevRoleId = prevOrg?.member_role_id ? String(prevOrg.member_role_id) : null;
+    let res = null;
+    if (prevRoleId) {
+      res = await enqueueRoleOp({ member, roleId: prevRoleId, action: "add", context: "org:manual-remove:revert" });
+    }
+    await audit?.(
+      "🧭 Schimbare manuală rol org",
+      [
+        `**Țintă:** <@${member.id}> (\`${member.id}\`)`,
+        `**Rol:** ${prevRoleId ? `<@&${prevRoleId}>` : "—"}`,
+        `**Decizie:** **REVERTED by policy**`,
+        `**Policy:** accept_manual_org_role_changes=false`,
+        `**Executor:** necunoscut`,
+        `**Rezultat:** ${fmtOpResult(res)}`
+      ].join("\n")
+    );
+    return { ok: true, action: "REVERTED", prevOrgId: prev.org_id };
   }
 
   const org = hits[0];
@@ -193,6 +195,44 @@ export async function syncMemberOrgsDiscordToDb({ db, guild, member, audit }) {
 
   if (prev && String(prev.org_id) === String(org.id) && String(prev.role) === String(role)) {
     return { ok: true, action: "NOOP", orgId: org.id, role, prevOrgId: prev?.org_id ?? null };
+  }
+
+  const acceptManual = settingBool(db, "accept_manual_org_role_changes", false);
+  const isManualAdd = !prev;
+  const isManualSwitch = !!(prev && String(prev.org_id) !== String(org.id));
+
+  if ((isManualAdd || isManualSwitch) && !acceptManual) {
+    const newRoleId = org?.member_role_id ? String(org.member_role_id) : null;
+    const prevOrg = prev ? repo.getOrg(db, prev.org_id) : null;
+    const prevRoleId = prevOrg?.member_role_id ? String(prevOrg.member_role_id) : null;
+
+    let removeRes = null;
+    let addRes = null;
+
+    if (newRoleId) {
+      removeRes = await enqueueRoleOp({ member, roleId: newRoleId, action: "remove", context: "org:manual-add-switch:revert:remove-new" });
+    }
+    if (isManualSwitch && prevRoleId) {
+      addRes = await enqueueRoleOp({ member, roleId: prevRoleId, action: "add", context: "org:manual-add-switch:revert:add-prev" });
+    }
+
+    const changeType = isManualAdd ? "ADD" : "SWITCH";
+    await audit?.(
+      "🧭 Schimbare manuală rol org",
+      [
+        `**Țintă:** <@${member.id}> (\`${member.id}\`)`,
+        `**Tip schimbare:** ${changeType}`,
+        `**Rol nou detectat:** ${newRoleId ? `<@&${newRoleId}>` : "—"}`,
+        `**Rol precedent:** ${prevRoleId ? `<@&${prevRoleId}>` : "—"}`,
+        `**Decizie:** **REVERTED by policy**`,
+        `**Policy:** accept_manual_org_role_changes=false`,
+        `**Executor:** necunoscut`,
+        `**Rezultat remove nou:** ${fmtOpResult(removeRes)}`,
+        ...(isManualSwitch ? [`**Rezultat add precedent:** ${fmtOpResult(addRes)}`] : [])
+      ].join("\n")
+    );
+
+    return { ok: true, action: "REVERTED", orgId: org.id, role, prevOrgId: prev?.org_id ?? null };
   }
 
   repo.upsertMembership(db, member.id, org.id, role);
