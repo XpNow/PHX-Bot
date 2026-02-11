@@ -1,4 +1,5 @@
 import { ActionRowBuilder, ButtonStyle, MessageFlags } from "discord.js";
+import crypto from "crypto";
 import * as repo from "../../db/repo.js";
 import { getSetting } from "../../db/db.js";
 import { hasRole, parseUserIds, humanKind } from "../../util/access.js";
@@ -10,6 +11,8 @@ import {
   PK_MS,
   DAY_MS,
   LEGAL_MIN_DAYS,
+  ORG_SWITCH_MS,
+  TRANSFER_MS,
   sendEphemeral,
   makeBrandedEmbed,
   audit,
@@ -448,15 +451,12 @@ async function removeFromOrg(ctx, targetMember, orgId, byUserId, { skipOrgSwitch
     console.error(`[REMOVE] Org not found for orgId ${orgId}`);
     return { ok:false, msg:"Organizația nu există." };
   }
-// Safeguard: do NOT allow removing a Leader/Co-Leader directly.
-// They must be downgraded to MEMBER first via Set rank.
 const targetRank = getOrgRank(targetMember, org);
 if (!ctx.perms.staff && (targetRank === "LEADER" || targetRank === "COLEADER")) {
   const pretty = targetRank === "LEADER" ? "LEADER" : "CO-LEADER";
   return { ok:false, msg:`Userul are rank **${pretty}**. Retrogradează-l mai întâi la **MEMBER** din **Set rank**, apoi încearcă din nou.` };
 }
 
-// If staff removes directly, also cleanup leader/co-leader roles to avoid leftovers.
 if (ctx.perms.staff) {
   const leadershipRoleIds = [org.leader_role_id, org.co_leader_role_id].filter(Boolean);
   for (const rid of leadershipRoleIds) {
@@ -529,8 +529,6 @@ async function applyPk(ctx, targetMember, orgId, byUserId) {
     }
     const canManage = canManageTargetRank(ctx, org, targetMember);
     if (!canManage.ok) return { ok:false, msg: canManage.msg };
-// Safeguard: do NOT allow applying PK removal to a Leader/Co-Leader directly.
-// They must be downgraded to MEMBER first via Set rank.
 const targetRank = getOrgRank(targetMember, org);
 if (!ctx.perms.staff && (targetRank === "LEADER" || targetRank === "COLEADER")) {
   const pretty = targetRank === "LEADER" ? "LEADER" : "CO-LEADER";
