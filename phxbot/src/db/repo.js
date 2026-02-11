@@ -68,6 +68,61 @@ export function updateOrgMemberCap(db, orgId, capValue) {
   db.prepare("UPDATE orgs SET member_cap=? WHERE id=?").run(capValue ?? null, orgId);
 }
 
+export function updateOrgEditable(db, orgId, payload) {
+  db.prepare(`
+    UPDATE orgs
+    SET
+      member_role_id=COALESCE(?, member_role_id),
+      leader_role_id=COALESCE(?, leader_role_id),
+      co_leader_role_id=COALESCE(?, co_leader_role_id),
+      member_cap=COALESCE(?, member_cap),
+      co_leader_cap=COALESCE(?, co_leader_cap),
+      extra_role_ids=COALESCE(?, extra_role_ids),
+      pk_cooldown_days=COALESCE(?, pk_cooldown_days),
+      transfer_cooldown_days=COALESCE(?, transfer_cooldown_days),
+      no_cooldown_after_days=COALESCE(?, no_cooldown_after_days),
+      no_cooldown_types=COALESCE(?, no_cooldown_types)
+    WHERE id=?
+  `).run(
+    payload.member_role_id ?? null,
+    payload.leader_role_id ?? null,
+    payload.co_leader_role_id ?? null,
+    payload.member_cap ?? null,
+    payload.co_leader_cap ?? null,
+    payload.extra_role_ids ?? null,
+    payload.pk_cooldown_days ?? null,
+    payload.transfer_cooldown_days ?? null,
+    payload.no_cooldown_after_days ?? null,
+    payload.no_cooldown_types ?? null,
+    orgId
+  );
+}
+
+export function listOrgDelegates(db, orgId) {
+  return db.prepare("SELECT * FROM org_delegates WHERE org_id=? ORDER BY created_at DESC").all(orgId);
+}
+
+export function getOrgDelegate(db, orgId, userId) {
+  return db.prepare("SELECT * FROM org_delegates WHERE org_id=? AND user_id=?").get(orgId, String(userId));
+}
+
+export function upsertOrgDelegate(db, orgId, userId, flags = {}, createdBy = null) {
+  const now = Date.now();
+  return db.prepare(`
+    INSERT INTO org_delegates(org_id, user_id, can_promote_coleader, can_demote_coleader, created_by, created_at)
+    VALUES(?,?,?,?,?,?)
+    ON CONFLICT(org_id, user_id) DO UPDATE SET
+      can_promote_coleader=excluded.can_promote_coleader,
+      can_demote_coleader=excluded.can_demote_coleader,
+      created_by=excluded.created_by,
+      created_at=excluded.created_at
+  `).run(orgId, String(userId), flags.can_promote_coleader ? 1 : 0, flags.can_demote_coleader ? 1 : 0, createdBy, now);
+}
+
+export function removeOrgDelegate(db, orgId, userId) {
+  return db.prepare("DELETE FROM org_delegates WHERE org_id=? AND user_id=?").run(orgId, String(userId));
+}
+
 export function upsertLastOrgState(db, userId, orgId, leftAt, removedBy) {
   db.prepare(`
     INSERT INTO last_org_state(user_id, last_org_id, last_left_at, last_removed_by)

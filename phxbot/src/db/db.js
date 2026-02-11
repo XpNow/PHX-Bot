@@ -77,6 +77,15 @@ export function ensureSchema(db) {
     last_seen_at INTEGER,
     last_left_at INTEGER
   );
+  CREATE TABLE IF NOT EXISTS org_delegates (
+    org_id INTEGER NOT NULL,
+    user_id TEXT NOT NULL,
+    can_promote_coleader INTEGER NOT NULL DEFAULT 1,
+    can_demote_coleader INTEGER NOT NULL DEFAULT 0,
+    created_by TEXT,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (org_id, user_id)
+  );
   `);
 
   db.exec(`
@@ -87,6 +96,7 @@ export function ensureSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_warns_status_expires_at ON warns(status, expires_at);
     CREATE INDEX IF NOT EXISTS idx_transfer_requests_status ON transfer_requests(status);
     CREATE INDEX IF NOT EXISTS idx_transfer_requests_cooldown ON transfer_requests(cooldown_expires_at);
+    CREATE INDEX IF NOT EXISTS idx_org_delegates_org ON org_delegates(org_id);
   `);
 
   function ensureColumn(table, column, ddl) {
@@ -101,6 +111,12 @@ export function ensureSchema(db) {
   ensureColumn("orgs", "co_leader_role_id", "co_leader_role_id TEXT");
   ensureColumn("orgs", "member_role_id", "member_role_id TEXT NOT NULL DEFAULT ''");
   ensureColumn("orgs", "member_cap", "member_cap INTEGER");
+  ensureColumn("orgs", "co_leader_cap", "co_leader_cap INTEGER");
+  ensureColumn("orgs", "extra_role_ids", "extra_role_ids TEXT NOT NULL DEFAULT ''");
+  ensureColumn("orgs", "pk_cooldown_days", "pk_cooldown_days INTEGER");
+  ensureColumn("orgs", "transfer_cooldown_days", "transfer_cooldown_days INTEGER");
+  ensureColumn("orgs", "no_cooldown_after_days", "no_cooldown_after_days INTEGER");
+  ensureColumn("orgs", "no_cooldown_types", "no_cooldown_types TEXT NOT NULL DEFAULT ''");
   ensureColumn("transfer_requests", "retry_count", "retry_count INTEGER NOT NULL DEFAULT 0");
 
   const orgCols = db.prepare("PRAGMA table_info(orgs)").all().map(r => r.name);
@@ -134,6 +150,8 @@ export function ensureSchema(db) {
     ["audit_index_window_ms", String(120 * 1000)],
     ["audit_index_limit", "50"],
     ["transfer_fail_audit_dedupe_ms", String(2 * 60 * 1000)],
+    ["accept_manual_org_role_changes", "false"],
+    ["accept_manual_cooldown_role_changes", "false"],
     ["transfer_cooldown_ms", String(60 * 60 * 1000)],
     ["org_switch_cooldown_ms", String(3 * 60 * 60 * 1000)],
     ["transfer_request_expiry_ms", String(24 * 60 * 60 * 1000)],
