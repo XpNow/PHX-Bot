@@ -387,10 +387,14 @@ function configSyncPoliciesView(ctx) {
   const emb = makeEmbed("Politici sincronizare", "Controlează accept/revert pentru schimbări manuale de roluri.");
   const orgManual = settingBool(ctx.db, "accept_manual_org_role_changes", false);
   const cooldownManual = settingBool(ctx.db, "accept_manual_cooldown_role_changes", false);
+  const orgDowntime = String(getSetting(ctx.db, "policy_org_roles_downtime") || "REVERT").toUpperCase();
+  const cooldownDowntime = String(getSetting(ctx.db, "policy_cooldowns_downtime") || "REVERT").toUpperCase();
   emb.setDescription([
     emb.data.description,
     `• Acceptă schimbări manuale (Organizații): **${orgManual ? "ON" : "OFF"}**`,
-    `• Acceptă schimbări manuale (Cooldown/Sancțiuni): **${cooldownManual ? "ON" : "OFF"}**`
+    `• Acceptă schimbări manuale (Cooldown/Sancțiuni): **${cooldownManual ? "ON" : "OFF"}**`,
+    `• Downtime policy org roles: **${orgDowntime}**`,
+    `• Downtime policy cooldowns: **${cooldownDowntime}**`
   ].join("\n"));
   const buttons = [
     btn("famenu:config:syncpol:set", "Set policies", ButtonStyle.Secondary, "🧭"),
@@ -570,7 +574,9 @@ function advancedSettingsModal() {
 function syncPoliciesModal() {
   return modal("famenu:config_syncpol_modal", "Set politici sincronizare", [
     input("org_manual", "Accept manual org roles? (true/false)", undefined, true, "false"),
-    input("cooldown_manual", "Accept manual cooldown roles? (true/false)", undefined, true, "false")
+    input("cooldown_manual", "Accept manual cooldown roles? (true/false)", undefined, true, "false"),
+    input("org_downtime", "Downtime org policy (ACCEPT/REVERT)", undefined, true, "REVERT"),
+    input("cooldown_downtime", "Downtime cooldown policy (ACCEPT/REVERT)", undefined, true, "REVERT")
   ]);
 }
 
@@ -1539,17 +1545,25 @@ export async function handleFamenuModal(interaction, ctx) {
     if (!requireConfigManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar owner sau rolul de config.");
     const orgRaw = interaction.fields.getTextInputValue("org_manual")?.trim();
     const cooldownRaw = interaction.fields.getTextInputValue("cooldown_manual")?.trim();
+    const orgDowntimeRaw = String(interaction.fields.getTextInputValue("org_downtime") || "REVERT").trim().toUpperCase();
+    const cooldownDowntimeRaw = String(interaction.fields.getTextInputValue("cooldown_downtime") || "REVERT").trim().toUpperCase();
     const orgParsed = parseBoolInput(orgRaw, "Org manual policy");
     if (!orgParsed.ok) return sendEphemeral(interaction, "Eroare", orgParsed.msg);
     const cooldownParsed = parseBoolInput(cooldownRaw, "Cooldown manual policy");
     if (!cooldownParsed.ok) return sendEphemeral(interaction, "Eroare", cooldownParsed.msg);
+    if (!["ACCEPT", "REVERT"].includes(orgDowntimeRaw)) return sendEphemeral(interaction, "Eroare", "org_downtime invalid (ACCEPT/REVERT).");
+    if (!["ACCEPT", "REVERT"].includes(cooldownDowntimeRaw)) return sendEphemeral(interaction, "Eroare", "cooldown_downtime invalid (ACCEPT/REVERT).");
 
     setSetting(ctx.db, "accept_manual_org_role_changes", String(orgParsed.value));
     setSetting(ctx.db, "accept_manual_cooldown_role_changes", String(cooldownParsed.value));
+    setSetting(ctx.db, "policy_org_roles_downtime", orgDowntimeRaw);
+    setSetting(ctx.db, "policy_cooldowns_downtime", cooldownDowntimeRaw);
 
     await audit(ctx, "⚙️ Politici sincronizare", [
       `**Org roles manual changes:** ${orgParsed.value ? "ACCEPT" : "REVERT"}`,
       `**Cooldown roles manual changes:** ${cooldownParsed.value ? "ACCEPT" : "REVERT"}`,
+      `**Downtime org policy:** ${orgDowntimeRaw}`,
+      `**Downtime cooldown policy:** ${cooldownDowntimeRaw}`,
       `**De către:** <@${ctx.uid}>`
     ].join("\n"), COLORS.GLOBAL);
 

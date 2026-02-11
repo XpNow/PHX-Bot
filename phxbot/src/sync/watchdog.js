@@ -71,6 +71,11 @@ function fmtOpResult(res) {
   return `EȘEC (${res.reason || "UNKNOWN"})`;
 }
 
+function parsePolicyText(v, fallback = "REVERT") {
+  const s = String(v || "").trim().toUpperCase();
+  return s === "ACCEPT" || s === "REVERT" ? s : fallback;
+}
+
 async function sendAudit({ guild, db, title, desc, color = COLORS.GLOBAL }) {
   const auditChannelId = getSetting(db, "audit_channel_id");
   if (!auditChannelId) return;
@@ -311,7 +316,11 @@ async function recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval, rea
   };
 }
 
-async function recoverMembershipsFromDiscord({ db, members, reason }) {
+async function recoverMembershipsFromDiscord({ db, members, reason, acceptRoleRemoval }) {
+  if (!acceptRoleRemoval) {
+    return { ok: true, upserts: 0, removals: 0, conflicts: 0, driftLines: [] };
+  }
+
   let upserts = 0;
   let removals = 0;
   let conflicts = 0;
@@ -425,8 +434,18 @@ async function tick({ client, db, reason, acceptRoleRemoval }) {
   const doLogs = settingBool(db, "watchdog_drift_logs", true, "WATCHDOG_DRIFT_LOGS");
   const maxSample = Math.max(1, settingInt(db, "watchdog_drift_sample", 12, "WATCHDOG_DRIFT_SAMPLE"));
 
-  const memRes = await recoverMembershipsFromDiscord({ db, members, reason });
-  const cdRes = await recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval, reason });
+  const policyOrgDowntime = parsePolicyText(getSetting(db, "policy_org_roles_downtime"), "REVERT");
+  const policyCooldownDowntime = parsePolicyText(getSetting(db, "policy_cooldowns_downtime"), "REVERT");
+
+  const acceptOrgDowntime = reason === "startup"
+    ? !!acceptRoleRemoval && policyOrgDowntime === "ACCEPT"
+    : true;
+  const acceptCooldownDowntime = reason === "startup"
+    ? !!acceptRoleRemoval && policyCooldownDowntime === "ACCEPT"
+    : false;
+
+  const memRes = await recoverMembershipsFromDiscord({ db, members, reason, acceptRoleRemoval: acceptOrgDowntime });
+  const cdRes = await recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval: acceptCooldownDowntime, reason });
   const staleRes = await cleanupStaleMemberships({ db, members, reason });
 
   if (!doLogs) return;
@@ -480,8 +499,8 @@ function section(lines, title, items) {
 
   const acceptManualOrg = settingBool(db, "accept_manual_org_role_changes", false);
   const acceptManualCooldown = settingBool(db, "accept_manual_cooldown_role_changes", false);
-  const policy = acceptRoleRemoval
-    ? "Discord = adevăr (acceptă schimbările făcute cât botul a fost offline)"
+  const policy = reason === "startup"
+    ? `Startup downtime policies • org=${policyOrgDowntime}, cooldown=${policyCooldownDowntime}`
     : "DB = adevăr (botul repară drift-ul apărut cât este online, exceptând politicile manuale active)";
 
   const summaryParts = [];
@@ -512,6 +531,10 @@ function section(lines, title, items) {
   lines.push(`**Manual org roles:** ${acceptManualOrg ? "ACCEPT" : "REVERT"}`);
   lines.push(`**Manual cooldown roles:** ${acceptManualCooldown ? "ACCEPT" : "REVERT"}`);
   lines.push(`**watchdog_accept_offline_role_removal:** ${acceptRoleRemoval ? "ON (startup)" : "OFF (interval)"}`);
+  if (reason === "startup") {
+    lines.push(`**Startup org drift policy:** ${policyOrgDowntime}`);
+    lines.push(`**Startup cooldown drift policy:** ${policyCooldownDowntime}`);
+  }
   lines.push(`**Membri scanați:** **${members.size}**`);
   if (summaryParts.length) lines.push(`**Schimbări:** ${summaryParts.join(" • ")}`);
   lines.push("—");

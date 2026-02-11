@@ -152,6 +152,8 @@ export function ensureSchema(db) {
     ["transfer_fail_audit_dedupe_ms", String(2 * 60 * 1000)],
     ["accept_manual_org_role_changes", "false"],
     ["accept_manual_cooldown_role_changes", "false"],
+    ["policy_org_roles_downtime", "REVERT"],
+    ["policy_cooldowns_downtime", "REVERT"],
     ["transfer_cooldown_ms", String(60 * 60 * 1000)],
     ["org_switch_cooldown_ms", String(3 * 60 * 60 * 1000)],
     ["transfer_request_expiry_ms", String(24 * 60 * 60 * 1000)],
