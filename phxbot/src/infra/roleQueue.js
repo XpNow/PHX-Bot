@@ -1,11 +1,33 @@
 import { setTimeout as delay } from "node:timers/promises";
+import { openDb, ensureSchema, getSetting } from "../db/db.js";
 
 const inFlight = new Set();
 const memberChains = new Map();
 
-const DEFAULT_CONCURRENCY = Number(process.env.ROLE_OP_CONCURRENCY || 3);
-const CONCURRENCY = Number.isFinite(DEFAULT_CONCURRENCY) ? Math.max(1, Math.min(DEFAULT_CONCURRENCY, 10)) : 3;
-const limiter = makeSemaphore(CONCURRENCY);
+function parseConcurrency(value, fallback = 3) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(1, Math.min(Math.floor(n), 10));
+}
+
+function getInitialConcurrency() {
+  if (process.env.ROLE_OP_CONCURRENCY) {
+    return parseConcurrency(process.env.ROLE_OP_CONCURRENCY, 3);
+  }
+  try {
+    const db = openDb();
+    ensureSchema(db);
+    const raw = getSetting(db, "role_op_concurrency");
+    db.close();
+    return parseConcurrency(raw, 3);
+  } catch (err) {
+    console.error("[roleQueue] failed to read role_op_concurrency setting:", err);
+    return 3;
+  }
+}
+
+let concurrency = getInitialConcurrency();
+const limiter = makeSemaphore(concurrency);
 
 function keyFor(op) {
   return `${op.action}:${op.guildId}:${op.userId}:${op.roleId}`;
@@ -17,6 +39,7 @@ function memberKeyFor(op) {
 
 function makeSemaphore(max) {
   let permits = max;
+  let maxPermits = max;
   const waiters = [];
   return {
     async acquire() {
@@ -28,13 +51,32 @@ function makeSemaphore(max) {
       permits--;
     },
     release() {
-      permits++;
+      permits = Math.min(permits + 1, maxPermits);
       if (waiters.length && permits > 0) {
+        const resolve = waiters.shift();
+        resolve();
+      }
+    },
+    setMax(nextMax) {
+      const clamped = Math.max(1, Math.min(Math.floor(nextMax), 10));
+      maxPermits = clamped;
+      if (permits > maxPermits) {
+        permits = maxPermits;
+      }
+      while (waiters.length && permits > 0) {
+        permits--;
         const resolve = waiters.shift();
         resolve();
       }
     }
   };
+}
+
+export function setRoleOpConcurrency(value) {
+  const next = parseConcurrency(value, concurrency);
+  concurrency = next;
+  limiter.setMax(next);
+  return concurrency;
 }
 
 function jitter(ms) {
