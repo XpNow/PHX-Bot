@@ -9,6 +9,7 @@ export function openDb() {
 
   const db = new Database(dbPath);
   db.pragma("journal_mode = WAL");
+  db.pragma("foreign_keys = ON");
   db.pragma("synchronous = NORMAL");
   db.pragma("busy_timeout = 5000");
   return db;
@@ -24,6 +25,7 @@ export function ensureSchema(db) {
     member_role_id TEXT NOT NULL,
     leader_role_id TEXT NOT NULL,
     co_leader_role_id TEXT,
+    member_cap INTEGER,
     created_at INTEGER NOT NULL
   );
   CREATE TABLE IF NOT EXISTS memberships (
@@ -58,6 +60,32 @@ export function ensureSchema(db) {
     payload_json TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS global_state (key TEXT PRIMARY KEY, value TEXT);
+  CREATE TABLE IF NOT EXISTS transfer_requests (
+    request_id TEXT PRIMARY KEY,
+    from_org_id INTEGER NOT NULL,
+    to_org_id INTEGER NOT NULL,
+    user_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    requested_by TEXT NOT NULL,
+    approved_by TEXT,
+    created_at INTEGER NOT NULL,
+    approved_at INTEGER,
+    cooldown_expires_at INTEGER
+  );
+  CREATE TABLE IF NOT EXISTS user_presence (
+    user_id TEXT PRIMARY KEY,
+    last_seen_at INTEGER,
+    last_left_at INTEGER
+  );
+  CREATE TABLE IF NOT EXISTS org_delegates (
+    org_id INTEGER NOT NULL,
+    user_id TEXT NOT NULL,
+    can_promote_coleader INTEGER NOT NULL DEFAULT 1,
+    can_demote_coleader INTEGER NOT NULL DEFAULT 0,
+    created_by TEXT,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (org_id, user_id)
+  );
   `);
 
   db.exec(`
@@ -66,6 +94,9 @@ export function ensureSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_cooldowns_kind_expires_at ON cooldowns(kind, expires_at);
     CREATE INDEX IF NOT EXISTS idx_warns_status_created_at ON warns(status, created_at);
     CREATE INDEX IF NOT EXISTS idx_warns_status_expires_at ON warns(status, expires_at);
+    CREATE INDEX IF NOT EXISTS idx_transfer_requests_status ON transfer_requests(status);
+    CREATE INDEX IF NOT EXISTS idx_transfer_requests_cooldown ON transfer_requests(cooldown_expires_at);
+    CREATE INDEX IF NOT EXISTS idx_org_delegates_org ON org_delegates(org_id);
   `);
 
   function ensureColumn(table, column, ddl) {
@@ -79,6 +110,14 @@ export function ensureSchema(db) {
   ensureColumn("orgs", "leader_role_id", "leader_role_id TEXT NOT NULL DEFAULT ''");
   ensureColumn("orgs", "co_leader_role_id", "co_leader_role_id TEXT");
   ensureColumn("orgs", "member_role_id", "member_role_id TEXT NOT NULL DEFAULT ''");
+  ensureColumn("orgs", "member_cap", "member_cap INTEGER");
+  ensureColumn("orgs", "co_leader_cap", "co_leader_cap INTEGER");
+  ensureColumn("orgs", "extra_role_ids", "extra_role_ids TEXT NOT NULL DEFAULT ''");
+  ensureColumn("orgs", "pk_cooldown_days", "pk_cooldown_days INTEGER");
+  ensureColumn("orgs", "transfer_cooldown_days", "transfer_cooldown_days INTEGER");
+  ensureColumn("orgs", "no_cooldown_after_days", "no_cooldown_after_days INTEGER");
+  ensureColumn("orgs", "no_cooldown_types", "no_cooldown_types TEXT NOT NULL DEFAULT ''");
+  ensureColumn("transfer_requests", "retry_count", "retry_count INTEGER NOT NULL DEFAULT 0");
 
   const orgCols = db.prepare("PRAGMA table_info(orgs)").all().map(r => r.name);
   if (orgCols.includes("type")) {
@@ -96,9 +135,35 @@ export function ensureSchema(db) {
     ["ban_role_id", ""],
     ["brand_text", "Phoenix Faction Manager"],
     ["brand_icon_url", ""],
+    ["watchdog_enabled", "true"],
+    ["watchdog_interval_min", "30"],
+    ["watchdog_startup_delay_ms", "5000"],
+    ["watchdog_accept_offline_role_removal", "true"],
+    ["watchdog_drift_logs", "true"],
+    ["watchdog_drift_sample", "12"],
+    ["org_reapply_on_join", "true"],
+    ["cooldown_reapply_on_join", "true"],
+    ["role_op_concurrency", "3"],
+    ["stale_membership_days", "14"],
+    ["pk_backfill_default_ms", String(3 * 24 * 60 * 60 * 1000)],
+    ["ban_backfill_default_ms", String(30 * 24 * 60 * 60 * 1000)],
+    ["audit_index_window_ms", String(120 * 1000)],
+    ["audit_index_limit", "50"],
+    ["transfer_fail_audit_dedupe_ms", String(2 * 60 * 1000)],
+    ["accept_manual_org_role_changes", "false"],
+    ["accept_manual_cooldown_role_changes", "false"],
+    ["policy_org_roles_downtime", "REVERT"],
+    ["policy_cooldowns_downtime", "REVERT"],
+    ["transfer_cooldown_ms", String(60 * 60 * 1000)],
+    ["org_switch_cooldown_ms", String(3 * 60 * 60 * 1000)],
+    ["transfer_request_expiry_ms", String(24 * 60 * 60 * 1000)],
+    ["transfer_complete_retry_count", "2"],
+    ["transfer_complete_retry_backoff_ms", String(60 * 1000)],
   ];
   const upsert = db.prepare("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)");
   for (const [k,v] of defaults) upsert.run(k,v);
+
+  db.prepare("INSERT OR IGNORE INTO global_state(key,value) VALUES(?,?)").run("schema_version", "2");
 }
 
 export function getSetting(db, key) {
