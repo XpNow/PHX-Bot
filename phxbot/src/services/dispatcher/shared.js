@@ -1,7 +1,4 @@
-import {
-  EmbedBuilder,
-  MessageFlags
-} from "discord.js";
+import { MessageFlags } from "discord.js";
 import { openDb, ensureSchema, getSetting, setSetting, getGlobal, setGlobal } from "../../db/db.js";
 import { isOwner } from "../../util/access.js";
 import { makeEmbed, safeComponents } from "../../ui/ui.js";
@@ -12,7 +9,8 @@ import { applyBranding } from "../../ui/brand.js";
 export const PK_MS = 3 * 24 * 60 * 60 * 1000;
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const LEGAL_MIN_DAYS = 14;
-export const WARN_MAX = 3;
+export const ORG_SWITCH_MS = 3 * 60 * 60 * 1000;
+export const TRANSFER_MS = 60 * 60 * 1000;
 const guildFetchCache = new Map();
 const FULL_FETCH_CACHE_MS = 15 * 1000;
 

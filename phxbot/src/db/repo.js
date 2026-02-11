@@ -60,6 +60,68 @@ export function getMembership(db, userId) {
 export function listMembersByOrg(db, orgId) {
   return db.prepare("SELECT * FROM memberships WHERE org_id=? ORDER BY since_ts DESC").all(orgId);
 }
+export function listMemberships(db) {
+  return db.prepare("SELECT * FROM memberships").all();
+}
+
+export function updateOrgMemberCap(db, orgId, capValue) {
+  db.prepare("UPDATE orgs SET member_cap=? WHERE id=?").run(capValue ?? null, orgId);
+}
+
+export function updateOrgEditable(db, orgId, payload) {
+  db.prepare(`
+    UPDATE orgs
+    SET
+      member_role_id=COALESCE(?, member_role_id),
+      leader_role_id=COALESCE(?, leader_role_id),
+      co_leader_role_id=COALESCE(?, co_leader_role_id),
+      member_cap=COALESCE(?, member_cap),
+      co_leader_cap=COALESCE(?, co_leader_cap),
+      extra_role_ids=COALESCE(?, extra_role_ids),
+      pk_cooldown_days=COALESCE(?, pk_cooldown_days),
+      transfer_cooldown_days=COALESCE(?, transfer_cooldown_days),
+      no_cooldown_after_days=COALESCE(?, no_cooldown_after_days),
+      no_cooldown_types=COALESCE(?, no_cooldown_types)
+    WHERE id=?
+  `).run(
+    payload.member_role_id ?? null,
+    payload.leader_role_id ?? null,
+    payload.co_leader_role_id ?? null,
+    payload.member_cap ?? null,
+    payload.co_leader_cap ?? null,
+    payload.extra_role_ids ?? null,
+    payload.pk_cooldown_days ?? null,
+    payload.transfer_cooldown_days ?? null,
+    payload.no_cooldown_after_days ?? null,
+    payload.no_cooldown_types ?? null,
+    orgId
+  );
+}
+
+export function listOrgDelegates(db, orgId) {
+  return db.prepare("SELECT * FROM org_delegates WHERE org_id=? ORDER BY created_at DESC").all(orgId);
+}
+
+export function getOrgDelegate(db, orgId, userId) {
+  return db.prepare("SELECT * FROM org_delegates WHERE org_id=? AND user_id=?").get(orgId, String(userId));
+}
+
+export function upsertOrgDelegate(db, orgId, userId, flags = {}, createdBy = null) {
+  const now = Date.now();
+  return db.prepare(`
+    INSERT INTO org_delegates(org_id, user_id, can_promote_coleader, can_demote_coleader, created_by, created_at)
+    VALUES(?,?,?,?,?,?)
+    ON CONFLICT(org_id, user_id) DO UPDATE SET
+      can_promote_coleader=excluded.can_promote_coleader,
+      can_demote_coleader=excluded.can_demote_coleader,
+      created_by=excluded.created_by,
+      created_at=excluded.created_at
+  `).run(orgId, String(userId), flags.can_promote_coleader ? 1 : 0, flags.can_demote_coleader ? 1 : 0, createdBy, now);
+}
+
+export function removeOrgDelegate(db, orgId, userId) {
+  return db.prepare("DELETE FROM org_delegates WHERE org_id=? AND user_id=?").run(orgId, String(userId));
+}
 
 export function upsertLastOrgState(db, userId, orgId, leftAt, removedBy) {
   db.prepare(`
@@ -84,7 +146,7 @@ export function getCooldown(db, userId, kind) {
   return db.prepare("SELECT * FROM cooldowns WHERE user_id=? AND kind=?").get(userId, kind);
 }
 export function clearCooldown(db, userId, kind) {
-  db.prepare("DELETE FROM cooldowns WHERE user_id=? AND kind=?").run(userId, kind);
+  return db.prepare("DELETE FROM cooldowns WHERE user_id=? AND kind=?").run(userId, kind);
 }
 export function listCooldowns(db, kind) {
   return db.prepare("SELECT * FROM cooldowns WHERE kind=? ORDER BY expires_at ASC").all(kind);
@@ -150,4 +212,126 @@ export function listExpiringCooldowns(db, nowTs) {
     WHERE expires_at <= ?
     ORDER BY expires_at ASC
   `).all(nowTs);
+}
+
+export function createTransferRequest(db, req) {
+  db.prepare(`
+    INSERT INTO transfer_requests(
+      request_id, from_org_id, to_org_id, user_id, status,
+      requested_by, approved_by, created_at, approved_at, cooldown_expires_at
+    ) VALUES(?,?,?,?,?,?,?,?,?,?)
+  `).run(
+    req.request_id,
+    req.from_org_id,
+    req.to_org_id,
+    req.user_id,
+    req.status,
+    req.requested_by,
+    req.approved_by ?? null,
+    req.created_at,
+    req.approved_at ?? null,
+    req.cooldown_expires_at ?? null
+  );
+}
+export function getTransferRequest(db, requestId) {
+  return db.prepare("SELECT * FROM transfer_requests WHERE request_id=?").get(requestId);
+}
+export function findActiveTransferByUser(db, userId) {
+  return db.prepare(`
+    SELECT * FROM transfer_requests
+    WHERE user_id=? AND status IN ('PENDING','APPROVED')
+    ORDER BY created_at DESC
+    LIMIT 1
+  `).get(userId);
+}
+export function listTransfersByUser(db, userId, limit = 10) {
+  return db.prepare(`
+    SELECT * FROM transfer_requests
+    WHERE user_id=?
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).all(userId, limit);
+}
+export function listPendingTransfersForOrg(db, toOrgId, limit = 20) {
+  return db.prepare(`
+    SELECT * FROM transfer_requests
+    WHERE to_org_id=? AND status='PENDING'
+    ORDER BY created_at ASC
+    LIMIT ?
+  `).all(toOrgId, limit);
+}
+export function listPendingTransfers(db, limit = 200) {
+  return db.prepare(`
+    SELECT * FROM transfer_requests
+    WHERE status='PENDING'
+    ORDER BY created_at ASC
+    LIMIT ?
+  `).all(limit);
+}
+export function listReadyTransfers(db, nowTs, limit = 50) {
+  return db.prepare(`
+    SELECT * FROM transfer_requests
+    WHERE status='APPROVED' AND cooldown_expires_at IS NOT NULL AND cooldown_expires_at <= ?
+    ORDER BY cooldown_expires_at ASC
+    LIMIT ?
+  `).all(nowTs, limit);
+}
+export function updateTransferRequestStatus(db, requestId, status, updates = {}) {
+  db.prepare(`
+    UPDATE transfer_requests
+    SET status=?,
+        approved_by=COALESCE(?, approved_by),
+        approved_at=COALESCE(?, approved_at),
+        cooldown_expires_at=COALESCE(?, cooldown_expires_at),
+        retry_count=COALESCE(?, retry_count)
+    WHERE request_id=?
+  `).run(
+    status,
+    updates.approved_by ?? null,
+    updates.approved_at ?? null,
+    updates.cooldown_expires_at ?? null,
+    updates.retry_count ?? null,
+    requestId
+  );
+}
+
+export function incrementTransferRetryCount(db, requestId) {
+  return db.prepare(`
+    UPDATE transfer_requests
+    SET retry_count = COALESCE(retry_count, 0) + 1
+    WHERE request_id=?
+  `).run(requestId);
+}
+
+
+export function cancelActiveTransfersByUser(db, userId, cancelledBy = null, cancelledAt = Date.now()) {
+  return db.prepare(`
+    UPDATE transfer_requests
+    SET status='CANCELLED',
+        approved_by=COALESCE(?, approved_by),
+        approved_at=COALESCE(?, approved_at),
+        cooldown_expires_at=COALESCE(cooldown_expires_at, ?)
+    WHERE user_id=? AND status IN ('PENDING','APPROVED')
+  `).run(cancelledBy, cancelledAt, cancelledAt, userId);
+}
+
+export function upsertUserPresence(
+  db,
+  userId,
+  { lastSeenAt = null, lastLeftAt = null, clearLeft = false } = {}
+) {
+  db.prepare(`
+    INSERT INTO user_presence(user_id, last_seen_at, last_left_at)
+    VALUES(?,?,?)
+    ON CONFLICT(user_id) DO UPDATE SET
+      last_seen_at=COALESCE(excluded.last_seen_at, user_presence.last_seen_at),
+      last_left_at=CASE
+        WHEN ? THEN NULL
+        WHEN excluded.last_left_at IS NOT NULL THEN excluded.last_left_at
+        ELSE user_presence.last_left_at
+      END
+  `).run(userId, lastSeenAt, lastLeftAt, clearLeft ? 1 : 0);
+}
+export function getUserPresence(db, userId) {
+  return db.prepare("SELECT * FROM user_presence WHERE user_id=?").get(userId);
 }
