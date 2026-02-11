@@ -55,6 +55,15 @@ function parseIntInput(raw, label, { min = null, max = null } = {}) {
   return { ok: true, value: n };
 }
 
+function parseSetDirective(raw) {
+  const v = String(raw ?? "").trim();
+  if (!v) return { mode: "keep" };
+  const low = v.toLowerCase();
+  if (["keep", "same", "nochange"].includes(low)) return { mode: "keep" };
+  if (["reset", "global", "default", "null", "none", "off"].includes(low)) return { mode: "reset" };
+  return { mode: "set", value: v };
+}
+
 function settingBool(db, key, fallback = false) {
   const raw = getSetting(db, key);
   if (raw !== "") {
@@ -1739,30 +1748,43 @@ ${preview}${remaining ? `
     const org = repo.getOrg(ctx.db, orgId);
     if (!org) return sendEphemeral(interaction, "Eroare", "Org inexistent.");
 
-    const memberCapRaw = interaction.fields.getTextInputValue("member_cap")?.trim();
-    const coCapRaw = interaction.fields.getTextInputValue("co_leader_cap")?.trim();
-    const leaderRoleRaw = interaction.fields.getTextInputValue("leader_role_id")?.replace(/[<@&#>]/g, "").trim();
-    const coLeaderRoleRaw = interaction.fields.getTextInputValue("co_leader_role_id")?.replace(/[<@&#>]/g, "").trim();
+    const memberCapDir = parseSetDirective(interaction.fields.getTextInputValue("member_cap")?.trim());
+    const coCapDir = parseSetDirective(interaction.fields.getTextInputValue("co_leader_cap")?.trim());
+    const leaderRoleDir = parseSetDirective(interaction.fields.getTextInputValue("leader_role_id")?.replace(/[<@&#>]/g, "").trim());
+    const coLeaderRoleDir = parseSetDirective(interaction.fields.getTextInputValue("co_leader_role_id")?.replace(/[<@&#>]/g, "").trim());
 
-    const memberCap = memberCapRaw ? Number(memberCapRaw) : null;
-    const coCap = coCapRaw ? Number(coCapRaw) : null;
-    if (memberCapRaw && (!Number.isFinite(memberCap) || memberCap < 0)) return sendEphemeral(interaction, "Eroare", "Member cap invalid.");
-    if (coCapRaw && (!Number.isFinite(coCap) || coCap < 0)) return sendEphemeral(interaction, "Eroare", "Co-leader cap invalid.");
-    if (leaderRoleRaw) {
+    if (memberCapDir.mode === "set") {
+      const memberCap = Number(memberCapDir.value);
+      if (!Number.isFinite(memberCap) || memberCap < 0) return sendEphemeral(interaction, "Eroare", "Member cap invalid.");
+      memberCapDir.value = Math.floor(memberCap);
+    }
+    if (coCapDir.mode === "set") {
+      const coCap = Number(coCapDir.value);
+      if (!Number.isFinite(coCap) || coCap < 0) return sendEphemeral(interaction, "Eroare", "Co-leader cap invalid.");
+      coCapDir.value = Math.floor(coCap);
+    }
+    if (leaderRoleDir.mode === "set") {
+      const leaderRoleRaw = leaderRoleDir.value;
       const chk = roleCheck(ctx, leaderRoleRaw, "leader");
       if (!chk.ok) return sendEphemeral(interaction, "Eroare", chk.msg);
     }
-    if (coLeaderRoleRaw) {
+    if (coLeaderRoleDir.mode === "set") {
+      const coLeaderRoleRaw = coLeaderRoleDir.value;
       const chk = roleCheck(ctx, coLeaderRoleRaw, "co-leader");
       if (!chk.ok) return sendEphemeral(interaction, "Eroare", chk.msg);
     }
 
-    repo.updateOrgEditable(ctx.db, orgId, {
-      member_cap: memberCapRaw ? Math.floor(memberCap) : null,
-      co_leader_cap: coCapRaw ? Math.floor(coCap) : null,
-      leader_role_id: leaderRoleRaw || null,
-      co_leader_role_id: coLeaderRoleRaw || null,
-    });
+    const payload = {};
+    if (memberCapDir.mode === "set") payload.member_cap = memberCapDir.value;
+    else if (memberCapDir.mode === "reset") payload.member_cap = null;
+    if (coCapDir.mode === "set") payload.co_leader_cap = coCapDir.value;
+    else if (coCapDir.mode === "reset") payload.co_leader_cap = null;
+    if (leaderRoleDir.mode === "set") payload.leader_role_id = leaderRoleDir.value;
+    else if (leaderRoleDir.mode === "reset") payload.leader_role_id = null;
+    if (coLeaderRoleDir.mode === "set") payload.co_leader_role_id = coLeaderRoleDir.value;
+    else if (coLeaderRoleDir.mode === "reset") payload.co_leader_role_id = null;
+
+    repo.updateOrgEditable(ctx.db, orgId, payload);
     const after = repo.getOrg(ctx.db, orgId);
     await audit(ctx, "🛠️ Edit organizație", `**Org:** **${org.name}** (\`${orgId}\`)\n**Înainte:** member_cap=${org.member_cap ?? "default"}, co_cap=${org.co_leader_cap ?? "default"}\n**După:** member_cap=${after.member_cap ?? "default"}, co_cap=${after.co_leader_cap ?? "default"}\n**De către:** <@${ctx.uid}>`, COLORS.GLOBAL);
     return sendEphemeral(interaction, "Org actualizată", `Org: **${org.name}**`);
@@ -1775,12 +1797,13 @@ ${preview}${remaining ? `
     const org = repo.getOrg(ctx.db, orgId);
     if (!org) return sendEphemeral(interaction, "Eroare", "Org inexistent.");
     const listOnly = /^(da|yes|y|1|true)$/i.test(interaction.fields.getTextInputValue("list_only")?.trim() || "");
-    const memberRoleRaw = interaction.fields.getTextInputValue("member_role_id")?.replace(/[<@&#>]/g, "").trim();
+    const memberRoleDir = parseSetDirective(interaction.fields.getTextInputValue("member_role_id")?.replace(/[<@&#>]/g, "").trim());
     const addIds = parseRoleIdsRaw(interaction.fields.getTextInputValue("extra_add") || "");
     const removeIds = new Set(parseRoleIdsRaw(interaction.fields.getTextInputValue("extra_remove") || ""));
     const current = new Set(parseRoleIdsRaw(org.extra_role_ids || ""));
 
-    if (memberRoleRaw) {
+    if (memberRoleDir.mode === "set") {
+      const memberRoleRaw = memberRoleDir.value;
       const chk = roleCheck(ctx, memberRoleRaw, "member");
       if (!chk.ok) return sendEphemeral(interaction, "Eroare", chk.msg);
     }
@@ -1793,12 +1816,14 @@ ${preview}${remaining ? `
 
     if (!listOnly) {
       repo.updateOrgEditable(ctx.db, orgId, {
-        member_role_id: memberRoleRaw || null,
+        ...(memberRoleDir.mode === "set" ? { member_role_id: memberRoleDir.value } : {}),
+        ...(memberRoleDir.mode === "reset" ? { member_role_id: null } : {}),
         extra_role_ids: Array.from(current).join(",")
       });
       await audit(ctx, "🧩 Edit roluri org", `**Org:** **${org.name}** (\`${orgId}\`)\n**Extra roles:** ${Array.from(current).map(x => `<@&${x}>`).join(", ") || "—"}\n**De către:** <@${ctx.uid}>`, COLORS.GLOBAL);
     }
-    return sendEphemeral(interaction, `Roluri org • ${org.name}`, `Base: ${memberRoleRaw ? `<@&${memberRoleRaw}>` : `<@&${org.member_role_id}>`}\nExtra: ${Array.from(current).map(x => `<@&${x}>`).join(", ") || "—"}`);
+    const baseRid = memberRoleDir.mode === "set" ? memberRoleDir.value : (memberRoleDir.mode === "reset" ? "" : org.member_role_id);
+    return sendEphemeral(interaction, `Roluri org • ${org.name}`, `Base: ${baseRid ? `<@&${baseRid}>` : "—"}\nExtra: ${Array.from(current).map(x => `<@&${x}>`).join(", ") || "—"}`);
   }
 
   if (id === "famenu:editorg_cooldowns_modal") {
@@ -1808,28 +1833,38 @@ ${preview}${remaining ? `
     const org = repo.getOrg(ctx.db, orgId);
     if (!org) return sendEphemeral(interaction, "Eroare", "Org inexistent.");
 
-    const parseDaysOrGlobal = (raw) => {
-      const v = String(raw || "").trim().toLowerCase();
-      if (!v || v === "global") return null;
-      const n = Number(v);
-      if (!Number.isFinite(n) || n < 0) return undefined;
-      return Math.floor(n);
+    const parseDaysDirective = (raw) => {
+      const dir = parseSetDirective(raw);
+      if (dir.mode === "keep") return dir;
+      if (dir.mode === "reset") return { mode: "reset", value: null };
+      const n = Number(dir.value);
+      if (!Number.isFinite(n) || n < 0) return { mode: "invalid" };
+      return { mode: "set", value: Math.floor(n) };
     };
-    const pkDays = parseDaysOrGlobal(interaction.fields.getTextInputValue("pk_days"));
-    const transferDays = parseDaysOrGlobal(interaction.fields.getTextInputValue("transfer_days"));
-    const noCdAfter = parseDaysOrGlobal(interaction.fields.getTextInputValue("no_cd_after_days"));
-    const noTypesRaw = String(interaction.fields.getTextInputValue("no_cd_types") || "").trim().toUpperCase();
-    const noTypes = ["", "PK", "TRANSFER", "BOTH"].includes(noTypesRaw) ? noTypesRaw : null;
-    if (pkDays === undefined || transferDays === undefined || noCdAfter === undefined || noTypes === null) {
+    const pkDays = parseDaysDirective(interaction.fields.getTextInputValue("pk_days"));
+    const transferDays = parseDaysDirective(interaction.fields.getTextInputValue("transfer_days"));
+    const noCdAfter = parseDaysDirective(interaction.fields.getTextInputValue("no_cd_after_days"));
+    const noTypesDir = parseSetDirective(interaction.fields.getTextInputValue("no_cd_types"));
+    let noTypes = null;
+    if (noTypesDir.mode === "set") {
+      const noTypesRaw = String(noTypesDir.value || "").trim().toUpperCase();
+      if (!["", "PK", "TRANSFER", "BOTH"].includes(noTypesRaw)) return sendEphemeral(interaction, "Eroare", "no_cd_types invalid (PK/TRANSFER/BOTH/reset/keep).");
+      noTypes = noTypesRaw;
+    }
+    if ([pkDays, transferDays, noCdAfter].some(x => x.mode === "invalid")) {
       return sendEphemeral(interaction, "Eroare", "Valori cooldown invalide.");
     }
-    repo.updateOrgEditable(ctx.db, orgId, {
-      pk_cooldown_days: pkDays,
-      transfer_cooldown_days: transferDays,
-      no_cooldown_after_days: noCdAfter,
-      no_cooldown_types: noTypes
-    });
-    await audit(ctx, "⏱️ Edit cooldown org", `**Org:** **${org.name}** (\`${orgId}\`)\nPK days=${pkDays ?? "global"}\nTransfer days=${transferDays ?? "global"}\nNo cooldown after=${noCdAfter ?? 0} days\nTypes=${noTypes || "OFF"}\n**De către:** <@${ctx.uid}>`, COLORS.GLOBAL);
+    const payload = {};
+    if (pkDays.mode === "set") payload.pk_cooldown_days = pkDays.value;
+    if (pkDays.mode === "reset") payload.pk_cooldown_days = null;
+    if (transferDays.mode === "set") payload.transfer_cooldown_days = transferDays.value;
+    if (transferDays.mode === "reset") payload.transfer_cooldown_days = null;
+    if (noCdAfter.mode === "set") payload.no_cooldown_after_days = noCdAfter.value;
+    if (noCdAfter.mode === "reset") payload.no_cooldown_after_days = null;
+    if (noTypesDir.mode === "set") payload.no_cooldown_types = noTypes;
+    if (noTypesDir.mode === "reset") payload.no_cooldown_types = "";
+    repo.updateOrgEditable(ctx.db, orgId, payload);
+    await audit(ctx, "⏱️ Edit cooldown org", `**Org:** **${org.name}** (\`${orgId}\`)\nPK days=${pkDays.mode === "set" ? pkDays.value : (pkDays.mode === "reset" ? "global" : "keep")}\nTransfer days=${transferDays.mode === "set" ? transferDays.value : (transferDays.mode === "reset" ? "global" : "keep")}\nNo cooldown after=${noCdAfter.mode === "set" ? noCdAfter.value : (noCdAfter.mode === "reset" ? "off" : "keep")} days\nTypes=${noTypesDir.mode === "set" ? (noTypes || "OFF") : (noTypesDir.mode === "reset" ? "OFF" : "keep")}\n**De către:** <@${ctx.uid}>`, COLORS.GLOBAL);
     return sendEphemeral(interaction, "Cooldown org actualizat", `Org: **${org.name}**`);
   }
 

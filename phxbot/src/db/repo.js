@@ -69,33 +69,28 @@ export function updateOrgMemberCap(db, orgId, capValue) {
 }
 
 export function updateOrgEditable(db, orgId, payload) {
-  db.prepare(`
-    UPDATE orgs
-    SET
-      member_role_id=COALESCE(?, member_role_id),
-      leader_role_id=COALESCE(?, leader_role_id),
-      co_leader_role_id=COALESCE(?, co_leader_role_id),
-      member_cap=COALESCE(?, member_cap),
-      co_leader_cap=COALESCE(?, co_leader_cap),
-      extra_role_ids=COALESCE(?, extra_role_ids),
-      pk_cooldown_days=COALESCE(?, pk_cooldown_days),
-      transfer_cooldown_days=COALESCE(?, transfer_cooldown_days),
-      no_cooldown_after_days=COALESCE(?, no_cooldown_after_days),
-      no_cooldown_types=COALESCE(?, no_cooldown_types)
-    WHERE id=?
-  `).run(
-    payload.member_role_id ?? null,
-    payload.leader_role_id ?? null,
-    payload.co_leader_role_id ?? null,
-    payload.member_cap ?? null,
-    payload.co_leader_cap ?? null,
-    payload.extra_role_ids ?? null,
-    payload.pk_cooldown_days ?? null,
-    payload.transfer_cooldown_days ?? null,
-    payload.no_cooldown_after_days ?? null,
-    payload.no_cooldown_types ?? null,
-    orgId
-  );
+  const fields = [
+    "member_role_id",
+    "leader_role_id",
+    "co_leader_role_id",
+    "member_cap",
+    "co_leader_cap",
+    "extra_role_ids",
+    "pk_cooldown_days",
+    "transfer_cooldown_days",
+    "no_cooldown_after_days",
+    "no_cooldown_types"
+  ];
+  const sets = [];
+  const vals = [];
+  for (const key of fields) {
+    if (!(key in payload)) continue;
+    sets.push(`${key}=?`);
+    vals.push(payload[key]);
+  }
+  if (!sets.length) return { changes: 0 };
+  vals.push(orgId);
+  return db.prepare(`UPDATE orgs SET ${sets.join(", ")} WHERE id=?`).run(...vals);
 }
 
 export function listOrgDelegates(db, orgId) {

@@ -290,12 +290,14 @@ export function canSetRank(ctx, org, desiredRank, targetMember, opts = {}) {
   }
   if (desiredRank === "COLEADER") {
     if (!org.co_leader_role_id) return { ok: false, msg: "Rolul de Co-Leader nu este setat pentru această organizație." };
+    if (delegated) return { ok: true };
     const actorRank = getOrgRank(ctx.member, org);
     if (!ctx.perms.staff && actorRank !== "LEADER") {
       return { ok: false, msg: "Doar liderul poate seta Co-Leader." };
     }
   }
   if (desiredRank === "MEMBER") {
+    if (delegated) return { ok: true };
     const targetRank = getOrgRank(targetMember, org);
     if (targetRank === "LEADER" && !ctx.perms.staff) {
       return { ok: false, msg: "Nu poți retrograda liderul organizației." };

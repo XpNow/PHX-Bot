@@ -474,13 +474,15 @@ function section(lines, title, items) {
   lines.push("—");
 }
 
-const modeName = acceptRoleRemoval
-  ? "Recuperare după downtime"
-  : "Verificare automată (watchdog)";
+  const modeName = acceptRoleRemoval
+    ? "Recuperare după downtime"
+    : "Verificare automată (watchdog)";
 
-const policy = acceptRoleRemoval
-  ? "Discord = adevăr (acceptă schimbările făcute cât botul a fost offline)"
-  : "DB = adevăr (botul repară drift-ul apărut cât este online)";
+  const acceptManualOrg = settingBool(db, "accept_manual_org_role_changes", false);
+  const acceptManualCooldown = settingBool(db, "accept_manual_cooldown_role_changes", false);
+  const policy = acceptRoleRemoval
+    ? "Discord = adevăr (acceptă schimbările făcute cât botul a fost offline)"
+    : "DB = adevăr (botul repară drift-ul apărut cât este online, exceptând politicile manuale active)";
 
   const summaryParts = [];
   if (counters.memUpserts) summaryParts.push(`Org upsert: ${counters.memUpserts}`);
@@ -507,6 +509,9 @@ const policy = acceptRoleRemoval
   lines.push(`**Mod:** ${modeName}`);
   lines.push(`**Când:** ${roReason(reason)}`);
   lines.push(`**Politică:** ${policy}`);
+  lines.push(`**Manual org roles:** ${acceptManualOrg ? "ACCEPT" : "REVERT"}`);
+  lines.push(`**Manual cooldown roles:** ${acceptManualCooldown ? "ACCEPT" : "REVERT"}`);
+  lines.push(`**watchdog_accept_offline_role_removal:** ${acceptRoleRemoval ? "ON (startup)" : "OFF (interval)"}`);
   lines.push(`**Membri scanați:** **${members.size}**`);
   if (summaryParts.length) lines.push(`**Schimbări:** ${summaryParts.join(" • ")}`);
   lines.push("—");
