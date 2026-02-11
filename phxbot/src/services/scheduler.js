@@ -185,7 +185,7 @@ async function tick({ client, db }) {
       ];
 
       const eb = new EmbedBuilder()
-        .setTitle("✅ Cooldown expirat (auto)")
+        .setTitle("✅ Cooldown expirat")
         .setColor(COLORS.SUCCESS)
         .setDescription(descLines.join("\n"))
         .setFooter({ text: `AUTO • ${new Date().toISOString()}` });
