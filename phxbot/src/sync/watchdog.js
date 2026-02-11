@@ -1,4 +1,4 @@
-import { getSetting } from "../db/db.js";
+import { getGlobal, getSetting } from "../db/db.js";
 import * as repo from "../db/repo.js";
 import { enqueueRoleOp } from "../infra/roleQueue.js";
 import { COLORS } from "../ui/theme.js";
@@ -6,9 +6,6 @@ import { applyBranding } from "../ui/brand.js";
 import { makeEmbed } from "../ui/ui.js";
 import { syncMemberOrgsDiscordToDb, diffMemberOrgsFromDiscord } from "./memberSync.js";
 import { AuditLogEvent } from "discord.js";
-
-const PK_MS_DEFAULT = 3 * 24 * 60 * 60 * 1000;
-const BAN_MS_DEFAULT = 30 * 24 * 60 * 60 * 1000;
 
 function fmtRel(tsMs) {
   return `<t:${Math.floor(Number(tsMs) / 1000)}:R>`;
@@ -23,6 +20,25 @@ function envBool(key, def = false) {
 function envInt(key, def) {
   const v = Number(process.env[key]);
   return Number.isFinite(v) ? v : def;
+}
+
+function settingBool(db, key, def, envKey) {
+  const raw = getSetting(db, key);
+  if (raw !== "") {
+    const v = String(raw).trim().toLowerCase();
+    if (["1", "true", "yes", "y", "on"].includes(v)) return true;
+    if (["0", "false", "no", "n", "off"].includes(v)) return false;
+  }
+  return envKey ? envBool(envKey, def) : def;
+}
+
+function settingInt(db, key, def, envKey) {
+  const raw = getSetting(db, key);
+  if (raw !== "") {
+    const v = Number(raw);
+    if (Number.isFinite(v)) return v;
+  }
+  return envKey ? envInt(envKey, def) : def;
 }
 
 function roReason(reason) {
@@ -53,6 +69,11 @@ function fmtOpResult(res) {
     return "OK";
   }
   return `EȘEC (${res.reason || "UNKNOWN"})`;
+}
+
+function parsePolicyText(v, fallback = "REVERT") {
+  const s = String(v || "").trim().toUpperCase();
+  return s === "ACCEPT" || s === "REVERT" ? s : fallback;
 }
 
 async function sendAudit({ guild, db, title, desc, color = COLORS.GLOBAL }) {
@@ -128,13 +149,19 @@ async function indexRecentMemberRoleAudits(guild, windowMs = 120_000, limit = 50
 }
 async function recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval, reason }) {
   const now = Date.now();
+  const acceptManualCooldown = settingBool(db, "accept_manual_cooldown_role_changes", false);
+  const acceptByPolicy = acceptManualCooldown || !!acceptRoleRemoval;
+  const pkDefaultMs = settingInt(db, "pk_backfill_default_ms", 3 * 24 * 60 * 60 * 1000);
+  const banDefaultMs = settingInt(db, "ban_backfill_default_ms", 30 * 24 * 60 * 60 * 1000);
   const pkRole = getSetting(db, "pk_role_id");
   const banRole = getSetting(db, "ban_role_id");
 
   const pkRows = repo.listCooldowns(db, "PK");
   const banRows = repo.listCooldowns(db, "BAN");
+  const transferRows = repo.listCooldowns(db, "ORG_SWITCH");
   const pkMap = new Map(pkRows.map(r => [String(r.user_id), r]));
   const banMap = new Map(banRows.map(r => [String(r.user_id), r]));
+  const transferMap = new Map(transferRows.map(r => [String(r.user_id), r]));
 
   let pkBackfilled = 0;
   let banBackfilled = 0;
@@ -144,6 +171,9 @@ async function recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval, rea
   let banExpiredRemoved = 0;
   let pkEnforced = 0;
   let banEnforced = 0;
+  let transferCleared = 0;
+  let transferEnforced = 0;
+  let transferExpiredRemoved = 0;
 
   const driftLines = [];
 
@@ -151,17 +181,21 @@ async function recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval, rea
     if (pkRole) {
       const hasRole = m.roles.cache.has(pkRole);
       const row = pkMap.get(m.id) || null;
+      const transferRow = transferMap.get(m.id) || null;
+      const hasTransferCooldown = !!(transferRow && Number(transferRow.expires_at) > now);
+      const activeTransfer = repo.findActiveTransferByUser(db, m.id);
+      const hasOpenTransfer = !!activeTransfer;
 
       if (hasRole) {
-        if (!row) {
-          const expiresAt = now + PK_MS_DEFAULT;
+        if (!row && !hasTransferCooldown && !hasOpenTransfer) {
+          const expiresAt = now + pkDefaultMs;
           repo.upsertCooldown(db, m.id, "PK", expiresAt, null, null);
           pkMap.set(m.id, { user_id: m.id, expires_at: expiresAt });
           pkBackfilled++;
           driftLines.push(
             `• <@${m.id}> — **PK** | Discord: ${fmtRoleState(true)} | DB: ${fmtDbCooldown(null, now)} → ✅ am creat cooldown în DB (3 zile, expiră ${fmtRel(expiresAt)})`
           );
-        } else if (Number(row.expires_at) <= now) {
+        } else if (row && Number(row.expires_at) <= now) {
           const res = await enqueueRoleOp({ member: m, roleId: pkRole, action: "remove", context: `watchdog:pk:expired:${reason}` });
           pkExpiredRemoved += res?.ok ? 1 : 0;
           repo.clearCooldown(db, m.id, "PK");
@@ -171,12 +205,12 @@ async function recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval, rea
           );
         }
       } else if (row && Number(row.expires_at) > now) {
-        if (acceptRoleRemoval) {
+        if (acceptByPolicy) {
           repo.clearCooldown(db, m.id, "PK");
           pkMap.delete(m.id);
           pkCleared++;
           driftLines.push(
-            `• <@${m.id}> — **PK** | Discord: ${fmtRoleState(false)} | DB: ${fmtDbCooldown(row, now)} → ✅ am șters cooldown-ul din DB (accept schimbare făcută offline)`
+            `• <@${m.id}> — **PK** | Discord: ${fmtRoleState(false)} | DB: ${fmtDbCooldown(row, now)} → ✅ ACCEPTED by policy (DB aliniat la Discord)`
           );
         } else {
           const res = await enqueueRoleOp({ member: m, roleId: pkRole, action: "add", context: `watchdog:pk:enforce:${reason}` });
@@ -188,13 +222,49 @@ async function recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval, rea
       }
     }
 
+    if (pkRole) {
+      const hasSharedRole = m.roles.cache.has(pkRole);
+      const transferRow = transferMap.get(m.id) || null;
+
+      if (transferRow && Number(transferRow.expires_at) <= now) {
+        const activePk = pkMap.get(m.id) || null;
+        const pkActive = !!(activePk && Number(activePk.expires_at) > now);
+        if (hasSharedRole && !pkActive) {
+          const res = await enqueueRoleOp({ member: m, roleId: pkRole, action: "remove", context: `watchdog:transfer:expired:${reason}` });
+          transferExpiredRemoved += res?.ok ? 1 : 0;
+          driftLines.push(
+            `• <@${m.id}> — **TRANSFER** | Discord: ${fmtRoleState(true)} | DB: ${fmtDbCooldown(transferRow, now)} → 🧹 am curățat rol transfer expirat • ${fmtOpResult(res)}`
+          );
+        }
+        repo.clearCooldown(db, m.id, "ORG_SWITCH");
+        transferMap.delete(m.id);
+      } else if (transferRow && Number(transferRow.expires_at) > now) {
+        if (!hasSharedRole) {
+          if (acceptByPolicy) {
+            repo.clearCooldown(db, m.id, "ORG_SWITCH");
+            transferMap.delete(m.id);
+            transferCleared++;
+            driftLines.push(
+              `• <@${m.id}> — **TRANSFER** | Discord: ${fmtRoleState(false)} | DB: ${fmtDbCooldown(transferRow, now)} → ✅ ACCEPTED by policy (DB aliniat la Discord)`
+            );
+          } else {
+            const res = await enqueueRoleOp({ member: m, roleId: pkRole, action: "add", context: `watchdog:transfer:enforce:${reason}` });
+            transferEnforced += res?.ok ? 1 : 0;
+            driftLines.push(
+              `• <@${m.id}> — **TRANSFER** | Discord: ${fmtRoleState(false)} | DB: ${fmtDbCooldown(transferRow, now)} → 🔁 am încercat să readaug rolul transfer • ${fmtOpResult(res)}`
+            );
+          }
+        }
+      }
+    }
+
     if (banRole) {
       const hasRole = m.roles.cache.has(banRole);
       const row = banMap.get(m.id) || null;
 
       if (hasRole) {
         if (!row) {
-          const expiresAt = now + BAN_MS_DEFAULT;
+          const expiresAt = now + banDefaultMs;
           repo.upsertCooldown(db, m.id, "BAN", expiresAt, null, null);
           banMap.set(m.id, { user_id: m.id, expires_at: expiresAt });
           banBackfilled++;
@@ -211,12 +281,12 @@ async function recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval, rea
           );
         }
       } else if (row && Number(row.expires_at) > now) {
-        if (acceptRoleRemoval) {
+        if (acceptByPolicy) {
           repo.clearCooldown(db, m.id, "BAN");
           banMap.delete(m.id);
           banCleared++;
           driftLines.push(
-            `• <@${m.id}> — **BAN** | Discord: ${fmtRoleState(false)} | DB: ${fmtDbCooldown(row, now)} → ✅ am șters cooldown-ul din DB (accept schimbare făcută offline)`
+            `• <@${m.id}> — **BAN** | Discord: ${fmtRoleState(false)} | DB: ${fmtDbCooldown(row, now)} → ✅ ACCEPTED by policy (DB aliniat la Discord)`
           );
         } else {
           const res = await enqueueRoleOp({ member: m, roleId: banRole, action: "add", context: `watchdog:ban:enforce:${reason}` });
@@ -239,11 +309,18 @@ async function recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval, rea
     banExpiredRemoved,
     pkEnforced,
     banEnforced,
+    transferCleared,
+    transferEnforced,
+    transferExpiredRemoved,
     driftLines
   };
 }
 
-async function recoverMembershipsFromDiscord({ db, members, reason }) {
+async function recoverMembershipsFromDiscord({ db, members, reason, acceptRoleRemoval }) {
+  if (!acceptRoleRemoval) {
+    return { ok: true, upserts: 0, removals: 0, conflicts: 0, driftLines: [] };
+  }
+
   let upserts = 0;
   let removals = 0;
   let conflicts = 0;
@@ -252,7 +329,11 @@ async function recoverMembershipsFromDiscord({ db, members, reason }) {
   const orgs = repo.listOrgs(db);
   const orgNameById = new Map(orgs.map(o => [String(o.id), o.name]));
   const orgById = new Map(orgs.map(o => [String(o.id), o]));
-  const auditIndex = members?.size ? await indexRecentMemberRoleAudits(members.first().guild).catch(() => new Map()) : new Map();
+  const auditWindowMs = Math.max(30_000, settingInt(db, "audit_index_window_ms", 120_000));
+  const auditLimit = Math.max(10, settingInt(db, "audit_index_limit", 50));
+  const auditIndex = members?.size
+    ? await indexRecentMemberRoleAudits(members.first().guild, auditWindowMs, auditLimit).catch(() => new Map())
+    : new Map();
   const audit = async () => {};
 
   for (const m of members.values()) {
@@ -309,7 +390,38 @@ async function recoverMembershipsFromDiscord({ db, members, reason }) {
   return { ok: true, upserts, removals, conflicts, driftLines };
 }
 
+async function cleanupStaleMemberships({ db, members, reason }) {
+  const now = Date.now();
+  const staleDays = Math.max(1, settingInt(db, "stale_membership_days", 14));
+  const cutoff = now - staleDays * 24 * 60 * 60 * 1000;
+  const memberIds = new Set(members.map(m => m.id));
+  const memberships = repo.listMemberships(db);
+
+  let cleaned = 0;
+  const lines = [];
+
+  for (const row of memberships) {
+    if (memberIds.has(String(row.user_id))) continue;
+    const presence = repo.getUserPresence(db, row.user_id);
+    const lastLeftAt = Number(presence?.last_left_at || 0);
+    if (!lastLeftAt || lastLeftAt > cutoff) continue;
+
+    repo.removeMembership(db, row.user_id);
+    repo.upsertLastOrgState(db, row.user_id, row.org_id, now, `STALE:${reason}`);
+    cleaned++;
+    lines.push(`• <@${row.user_id}> — org ${row.org_id} (last_left_at ${fmtRel(lastLeftAt)})`);
+  }
+
+  return { ok: true, cleaned, lines, staleDays };
+}
+
 async function tick({ client, db, reason, acceptRoleRemoval }) {
+  const schemaVersion = Number(getGlobal(db, "schema_version") || 0);
+  if (schemaVersion < 2) {
+    console.warn(`[WATCHDOG] schema_version=${schemaVersion} too old, skipping watchdog tick`);
+    return;
+  }
+
   const guildId = process.env.DISCORD_GUILD_ID;
   if (!guildId) return;
 
@@ -319,37 +431,54 @@ async function tick({ client, db, reason, acceptRoleRemoval }) {
   const members = await guild.members.fetch().catch(() => null);
   if (!members) return;
 
-  const doLogs = envBool("WATCHDOG_DRIFT_LOGS", true);
-  const maxSample = envInt("WATCHDOG_DRIFT_SAMPLE", 12);
+  const doLogs = settingBool(db, "watchdog_drift_logs", true, "WATCHDOG_DRIFT_LOGS");
+  const maxSample = Math.max(1, settingInt(db, "watchdog_drift_sample", 12, "WATCHDOG_DRIFT_SAMPLE"));
 
-  const memRes = await recoverMembershipsFromDiscord({ db, members, reason });
-  const cdRes = await recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval, reason });
+  const policyOrgDowntime = parsePolicyText(getSetting(db, "policy_org_roles_downtime"), "REVERT");
+  const policyCooldownDowntime = parsePolicyText(getSetting(db, "policy_cooldowns_downtime"), "REVERT");
 
-if (!doLogs) return;
+  const acceptOrgDowntime = reason === "startup"
+    ? !!acceptRoleRemoval && policyOrgDowntime === "ACCEPT"
+    : true;
+  const acceptCooldownDowntime = reason === "startup"
+    ? !!acceptRoleRemoval && policyCooldownDowntime === "ACCEPT"
+    : false;
 
-const drift = [...(memRes.driftLines || []), ...(cdRes.driftLines || [])];
-const sample = clipLines(drift, maxSample);
+  const memRes = await recoverMembershipsFromDiscord({ db, members, reason, acceptRoleRemoval: acceptOrgDowntime });
+  const cdRes = await recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval: acceptCooldownDowntime, reason });
+  const staleRes = await cleanupStaleMemberships({ db, members, reason });
 
-const counters = {
-  memUpserts: memRes.upserts || 0,
-  memRemovals: memRes.removals || 0,
-  memConflicts: memRes.conflicts || 0,
+  if (!doLogs) return;
 
-  pkBackfilled: cdRes.pkBackfilled || 0,
-  pkCleared: cdRes.pkCleared || 0,
-  pkEnforced: cdRes.pkEnforced || 0,
-  pkExpiredRemoved: cdRes.pkExpiredRemoved || 0,
+  const drift = [
+    ...(memRes.driftLines || []),
+    ...(cdRes.driftLines || []),
+    ...(staleRes.lines || [])
+  ];
+  const sample = clipLines(drift, maxSample);
 
-  banBackfilled: cdRes.banBackfilled || 0,
-  banCleared: cdRes.banCleared || 0,
-  banEnforced: cdRes.banEnforced || 0,
-  banExpiredRemoved: cdRes.banExpiredRemoved || 0,
-};
+  const counters = {
+    memUpserts: memRes.upserts || 0,
+    memRemovals: memRes.removals || 0,
+    memConflicts: memRes.conflicts || 0,
+    memStaleCleaned: staleRes.cleaned || 0,
+    pkBackfilled: cdRes.pkBackfilled || 0,
+    pkCleared: cdRes.pkCleared || 0,
+    pkEnforced: cdRes.pkEnforced || 0,
+    pkExpiredRemoved: cdRes.pkExpiredRemoved || 0,
+    banBackfilled: cdRes.banBackfilled || 0,
+    banCleared: cdRes.banCleared || 0,
+    banEnforced: cdRes.banEnforced || 0,
+    banExpiredRemoved: cdRes.banExpiredRemoved || 0,
+    transferCleared: cdRes.transferCleared || 0,
+    transferEnforced: cdRes.transferEnforced || 0,
+    transferExpiredRemoved: cdRes.transferExpiredRemoved || 0,
+  };
 
-const hasNumericChanges = Object.values(counters).some(v => v > 0);
-const hasDriftDetails = drift.length > 0;
+  const hasNumericChanges = Object.values(counters).some(v => v > 0);
+  const hasDriftDetails = drift.length > 0;
 
-if (!hasNumericChanges && !hasDriftDetails) return;
+  if (!hasNumericChanges && !hasDriftDetails) return;
 
 function pushIf(lines, label, value) {
   if (value > 0) lines.push(`• ${label}: **${value}**`);
@@ -364,82 +493,106 @@ function section(lines, title, items) {
   lines.push("—");
 }
 
-const modeName = acceptRoleRemoval
-  ? "Recuperare după downtime"
-  : "Verificare automată (watchdog)";
+  const modeName = acceptRoleRemoval
+    ? "Recuperare după downtime"
+    : "Verificare automată (watchdog)";
 
-const policy = acceptRoleRemoval
-  ? "Discord = adevăr (acceptă schimbările făcute cât botul a fost offline)"
-  : "DB = adevăr (botul repară drift-ul apărut cât este online)";
+  const acceptManualOrg = settingBool(db, "accept_manual_org_role_changes", false);
+  const acceptManualCooldown = settingBool(db, "accept_manual_cooldown_role_changes", false);
+  const policy = reason === "startup"
+    ? `Startup downtime policies • org=${policyOrgDowntime}, cooldown=${policyCooldownDowntime}`
+    : "DB = adevăr (botul repară drift-ul apărut cât este online, exceptând politicile manuale active)";
 
-const summaryParts = [];
-if (counters.memUpserts) summaryParts.push(`Org upsert: ${counters.memUpserts}`);
-if (counters.memRemovals) summaryParts.push(`Org removed: ${counters.memRemovals}`);
-if (counters.memConflicts) summaryParts.push(`Conflicts: ${counters.memConflicts}`);
+  const summaryParts = [];
+  if (counters.memUpserts) summaryParts.push(`Org upsert: ${counters.memUpserts}`);
+  if (counters.memRemovals) summaryParts.push(`Org removed: ${counters.memRemovals}`);
+  if (counters.memConflicts) summaryParts.push(`Conflicts: ${counters.memConflicts}`);
+  if (counters.memStaleCleaned) summaryParts.push(`Stale cleaned: ${counters.memStaleCleaned}`);
 
-if (counters.pkBackfilled) summaryParts.push(`PK backfill: ${counters.pkBackfilled}`);
-if (counters.pkCleared) summaryParts.push(`PK cleared: ${counters.pkCleared}`);
-if (counters.pkEnforced) summaryParts.push(`PK enforced: ${counters.pkEnforced}`);
-if (counters.pkExpiredRemoved) summaryParts.push(`PK expired: ${counters.pkExpiredRemoved}`);
+  if (counters.pkBackfilled) summaryParts.push(`PK backfill: ${counters.pkBackfilled}`);
+  if (counters.pkCleared) summaryParts.push(`PK cleared: ${counters.pkCleared}`);
+  if (counters.pkEnforced) summaryParts.push(`PK enforced: ${counters.pkEnforced}`);
+  if (counters.pkExpiredRemoved) summaryParts.push(`PK expired: ${counters.pkExpiredRemoved}`);
 
-if (counters.banBackfilled) summaryParts.push(`BAN backfill: ${counters.banBackfilled}`);
-if (counters.banCleared) summaryParts.push(`BAN cleared: ${counters.banCleared}`);
-if (counters.banEnforced) summaryParts.push(`BAN enforced: ${counters.banEnforced}`);
-if (counters.banExpiredRemoved) summaryParts.push(`BAN expired: ${counters.banExpiredRemoved}`);
+  if (counters.banBackfilled) summaryParts.push(`BAN backfill: ${counters.banBackfilled}`);
+  if (counters.banCleared) summaryParts.push(`BAN cleared: ${counters.banCleared}`);
+  if (counters.banEnforced) summaryParts.push(`BAN enforced: ${counters.banEnforced}`);
+  if (counters.banExpiredRemoved) summaryParts.push(`BAN expired: ${counters.banExpiredRemoved}`);
+  if (counters.transferCleared) summaryParts.push(`TRANSFER cleared: ${counters.transferCleared}`);
+  if (counters.transferEnforced) summaryParts.push(`TRANSFER enforced: ${counters.transferEnforced}`);
+  if (counters.transferExpiredRemoved) summaryParts.push(`TRANSFER expired: ${counters.transferExpiredRemoved}`);
 
-if (hasDriftDetails) summaryParts.push(`Drift lines: ${drift.length}`);
+  if (hasDriftDetails) summaryParts.push(`Drift lines: ${drift.length}`);
 
-const lines = [];
-lines.push(`**Mod:** ${modeName}`);
-lines.push(`**Când:** ${roReason(reason)}`);
-lines.push(`**Politică:** ${policy}`);
-lines.push(`**Membri scanați:** **${members.size}**`);
-if (summaryParts.length) lines.push(`**Schimbări:** ${summaryParts.join(" • ")}`);
-lines.push("—");
+  const lines = [];
+  lines.push(`**Mod:** ${modeName}`);
+  lines.push(`**Când:** ${roReason(reason)}`);
+  lines.push(`**Politică:** ${policy}`);
+  lines.push(`**Manual org roles:** ${acceptManualOrg ? "ACCEPT" : "REVERT"}`);
+  lines.push(`**Manual cooldown roles:** ${acceptManualCooldown ? "ACCEPT" : "REVERT"}`);
+  lines.push(`**watchdog_accept_offline_role_removal:** ${acceptRoleRemoval ? "ON (startup)" : "OFF (interval)"}`);
+  if (reason === "startup") {
+    lines.push(`**Startup org drift policy:** ${policyOrgDowntime}`);
+    lines.push(`**Startup cooldown drift policy:** ${policyCooldownDowntime}`);
+  }
+  lines.push(`**Membri scanați:** **${members.size}**`);
+  if (summaryParts.length) lines.push(`**Schimbări:** ${summaryParts.join(" • ")}`);
+  lines.push("—");
 
-section(lines, "Organizații (Discord → DB)", [
-  { label: "Adăugate/actualizate în DB", value: counters.memUpserts },
-  { label: "Șterse din DB (rol lipsă)", value: counters.memRemovals },
-  { label: "Conflicte (roluri multiple)", value: counters.memConflicts },
-]);
+  const staleLabelDays = Math.max(1, Number(staleRes.staleDays || 14));
+  section(lines, "Organizații (Discord → DB)", [
+    { label: "Adăugate/actualizate în DB", value: counters.memUpserts },
+    { label: "Șterse din DB (rol lipsă)", value: counters.memRemovals },
+    { label: "Conflicte (roluri multiple)", value: counters.memConflicts },
+    { label: `Curățate (stale > ${staleLabelDays} zile)`, value: counters.memStaleCleaned },
+  ]);
 
-section(lines, "Cooldown-uri (Discord ↔ DB)", [
-  { label: "PK: DB create (rol prezent)", value: counters.pkBackfilled },
-  { label: "PK: DB șterse (rol lipsă)", value: counters.pkCleared },
-  { label: "PK: rol readăugat (enforce)", value: counters.pkEnforced },
-  { label: "PK: curățate (expirate)", value: counters.pkExpiredRemoved },
+  section(lines, "Cooldown-uri (Discord ↔ DB)", [
+    { label: "PK: DB create (rol prezent)", value: counters.pkBackfilled },
+    { label: "PK: DB șterse (rol lipsă)", value: counters.pkCleared },
+    { label: "PK: rol readăugat (enforce)", value: counters.pkEnforced },
+    { label: "PK: curățate (expirate)", value: counters.pkExpiredRemoved },
+    { label: "BAN: DB create (rol prezent)", value: counters.banBackfilled },
+    { label: "BAN: DB șterse (rol lipsă)", value: counters.banCleared },
+    { label: "BAN: rol readăugat (enforce)", value: counters.banEnforced },
+    { label: "BAN: curățate (expirate)", value: counters.banExpiredRemoved },
 
-  { label: "BAN: DB create (rol prezent)", value: counters.banBackfilled },
-  { label: "BAN: DB șterse (rol lipsă)", value: counters.banCleared },
-  { label: "BAN: rol readăugat (enforce)", value: counters.banEnforced },
-  { label: "BAN: curățate (expirate)", value: counters.banExpiredRemoved },
-]);
+    { label: "TRANSFER: DB șterse (rol lipsă)", value: counters.transferCleared },
+    { label: "TRANSFER: rol readăugat (enforce)", value: counters.transferEnforced },
+    { label: "TRANSFER: curățate (expirate)", value: counters.transferExpiredRemoved },
+  ]);
 
-if (sample) {
-  lines.push(`**Detalii:**`);
-  lines.push(sample);
-}
+  if (sample) {
+    lines.push(`**Detalii:**`);
+    lines.push(sample);
+  }
 
-const title = acceptRoleRemoval ? "🛡️ Recuperare după downtime" : "🛡️ Watchdog • sincronizare";
-const color = COLORS.GLOBAL;
+  const title = acceptRoleRemoval ? "🛡️ Recuperare după downtime" : "🛡️ Watchdog • sincronizare";
+  const color = COLORS.GLOBAL;
 
-await sendAudit({ guild, db, title, desc: lines.join("\n"), color });
+  await sendAudit({ guild, db, title, desc: lines.join("\n"), color });
 }
 
 export function startWatchdog({ client, db }) {
-  if (!envBool("WATCHDOG_ENABLED", true)) return;
+  if (!settingBool(db, "watchdog_enabled", true, "WATCHDOG_ENABLED")) return;
 
-  const intervalMin = Math.max(5, envInt("WATCHDOG_INTERVAL_MIN", 30));
-  const startupDelay = Math.max(0, envInt("WATCHDOG_STARTUP_DELAY_MS", 5000));
-  const acceptOfflineRoleRemoval = envBool("WATCHDOG_ACCEPT_OFFLINE_ROLE_REMOVAL", true);
+  const startupDelay = Math.max(0, settingInt(db, "watchdog_startup_delay_ms", 5000, "WATCHDOG_STARTUP_DELAY_MS"));
+  const acceptOfflineRoleRemoval = settingBool(db, "watchdog_accept_offline_role_removal", true, "WATCHDOG_ACCEPT_OFFLINE_ROLE_REMOVAL");
 
   setTimeout(() => {
     tick({ client, db, reason: "startup", acceptRoleRemoval: acceptOfflineRoleRemoval })
       .catch(err => console.error("[WATCHDOG] startup tick failed:", err));
   }, startupDelay);
 
-  setInterval(() => {
-    tick({ client, db, reason: "interval", acceptRoleRemoval: false })
-      .catch(err => console.error("[WATCHDOG] interval tick failed:", err));
-  }, intervalMin * 60 * 1000);
+  const scheduleNext = () => {
+    const intervalMin = Math.max(5, settingInt(db, "watchdog_interval_min", 30, "WATCHDOG_INTERVAL_MIN"));
+    setTimeout(() => {
+      if (settingBool(db, "watchdog_enabled", true, "WATCHDOG_ENABLED")) {
+        tick({ client, db, reason: "interval", acceptRoleRemoval: false })
+          .catch(err => console.error("[WATCHDOG] interval tick failed:", err));
+      }
+      scheduleNext();
+    }, intervalMin * 60 * 1000);
+  };
+  scheduleNext();
 }

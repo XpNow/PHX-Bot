@@ -13,6 +13,7 @@ import {
   handleFamenuComponent,
   handleFamenuModal
 } from "./dispatcher/famenu.js";
+import { handlePermissionsCommand } from "./dispatcher/permissions.js";
 
 export async function handleInteraction(interaction, client) {
   const ctx = getCtx(interaction);
@@ -26,6 +27,7 @@ export async function handleInteraction(interaction, client) {
     if (interaction.commandName === "famenu") return handleFamenuCommand(interaction, ctx);
     if (interaction.commandName === "add") return handleAddCommand(interaction, ctx);
     if (interaction.commandName === "rmv") return handleRmvCommand(interaction, ctx);
+    if (interaction.commandName === "permissions") return handlePermissionsCommand(interaction, ctx);
     return sendEphemeral(interaction, "Eroare", "Command necunoscut.");
   }
 
