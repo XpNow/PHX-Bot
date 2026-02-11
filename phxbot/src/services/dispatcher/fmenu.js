@@ -477,6 +477,14 @@ if (ctx.perms.staff) {
   }
   const removed = await safeRoleRemove(targetMember, org.member_role_id, `Remove org role for ${targetMember.id}`);
   if (!removed) return { ok:false, msg:"Nu pot elimina rolul organizației (permisiuni lipsă)." };
+  const associatedRoleIds = parseOrgRoleIds(org).filter(rid => rid !== String(org.member_role_id));
+  for (const rid of associatedRoleIds) {
+    if (!targetMember.roles.cache.has(rid)) continue;
+    const chk = roleCheck(ctx, rid, "rol asociat");
+    if (!chk.ok) return { ok:false, msg: chk.msg };
+    const rm = await safeRoleRemove(targetMember, rid, `Remove associated org role ${rid} for ${targetMember.id}`);
+    if (!rm) return { ok:false, msg:"Nu pot elimina unul din rolurile asociate organizației." };
+  }
   const prevMembership = repo.getMembership(ctx.db, targetMember.id);
   repo.removeMembership(ctx.db, targetMember.id);
   if (!skipOrgSwitch && !noCooldownExempt(org, prevMembership, "TRANSFER")) {
@@ -598,18 +606,10 @@ async function setMemberRank(ctx, targetMember, orgId, desiredRank) {
   if (!ctx.perms.staff && actorRank !== "LEADER" && !canDelegatedColeg) {
     return { ok:false, msg:"Doar liderul (sau delegații pentru co-leader în org legală) poate schimba rank-urile." };
   }
-  if (!ctx.perms.staff && actorRank !== "LEADER" && canDelegatedColeg) {
-    const current = repo.getMembership(ctx.db, targetMember.id);
-    const currentRole = String(current?.role || "").toUpperCase();
-    const wantsDemoteCo = (currentRole === "COLEADER" || currentRole === "CO_LEADER") && desiredRank === "MEMBER";
-    if (wantsDemoteCo && Number(delegate.can_demote_coleader) !== 1) {
-      return { ok:false, msg:"Delegarea ta nu permite demotarea Co-Leader." };
-    }
-    if (desiredRank === "LEADER") {
-      return { ok:false, msg:"Delegarea permite doar până la Co-Leader." };
-    }
-  }
-  const rankCheck = canSetRank(ctx, org, desiredRank, targetMember);
+  const rankCheck = canSetRank(ctx, org, desiredRank, targetMember, {
+    delegated: canDelegatedColeg,
+    canDemoteCoLeader: Number(delegate?.can_demote_coleader) === 1
+  });
   if (!rankCheck.ok) return { ok:false, msg: rankCheck.msg };
 
   const memberRoleCheck = roleCheck(ctx, org.member_role_id, "membru");

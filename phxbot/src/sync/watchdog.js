@@ -144,6 +144,8 @@ async function indexRecentMemberRoleAudits(guild, windowMs = 120_000, limit = 50
 }
 async function recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval, reason }) {
   const now = Date.now();
+  const acceptManualCooldown = settingBool(db, "accept_manual_cooldown_role_changes", false);
+  const acceptByPolicy = acceptManualCooldown || !!acceptRoleRemoval;
   const pkDefaultMs = settingInt(db, "pk_backfill_default_ms", 3 * 24 * 60 * 60 * 1000);
   const banDefaultMs = settingInt(db, "ban_backfill_default_ms", 30 * 24 * 60 * 60 * 1000);
   const pkRole = getSetting(db, "pk_role_id");
@@ -198,12 +200,12 @@ async function recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval, rea
           );
         }
       } else if (row && Number(row.expires_at) > now) {
-        if (acceptRoleRemoval) {
+        if (acceptByPolicy) {
           repo.clearCooldown(db, m.id, "PK");
           pkMap.delete(m.id);
           pkCleared++;
           driftLines.push(
-            `• <@${m.id}> — **PK** | Discord: ${fmtRoleState(false)} | DB: ${fmtDbCooldown(row, now)} → ✅ am șters cooldown-ul din DB (accept schimbare făcută offline)`
+            `• <@${m.id}> — **PK** | Discord: ${fmtRoleState(false)} | DB: ${fmtDbCooldown(row, now)} → ✅ ACCEPTED by policy (DB aliniat la Discord)`
           );
         } else {
           const res = await enqueueRoleOp({ member: m, roleId: pkRole, action: "add", context: `watchdog:pk:enforce:${reason}` });
@@ -233,12 +235,12 @@ async function recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval, rea
         transferMap.delete(m.id);
       } else if (transferRow && Number(transferRow.expires_at) > now) {
         if (!hasSharedRole) {
-          if (acceptRoleRemoval) {
+          if (acceptByPolicy) {
             repo.clearCooldown(db, m.id, "ORG_SWITCH");
             transferMap.delete(m.id);
             transferCleared++;
             driftLines.push(
-              `• <@${m.id}> — **TRANSFER** | Discord: ${fmtRoleState(false)} | DB: ${fmtDbCooldown(transferRow, now)} → ✅ am șters cooldown transfer din DB (accept schimbare făcută offline)`
+              `• <@${m.id}> — **TRANSFER** | Discord: ${fmtRoleState(false)} | DB: ${fmtDbCooldown(transferRow, now)} → ✅ ACCEPTED by policy (DB aliniat la Discord)`
             );
           } else {
             const res = await enqueueRoleOp({ member: m, roleId: pkRole, action: "add", context: `watchdog:transfer:enforce:${reason}` });
@@ -274,12 +276,12 @@ async function recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval, rea
           );
         }
       } else if (row && Number(row.expires_at) > now) {
-        if (acceptRoleRemoval) {
+        if (acceptByPolicy) {
           repo.clearCooldown(db, m.id, "BAN");
           banMap.delete(m.id);
           banCleared++;
           driftLines.push(
-            `• <@${m.id}> — **BAN** | Discord: ${fmtRoleState(false)} | DB: ${fmtDbCooldown(row, now)} → ✅ am șters cooldown-ul din DB (accept schimbare făcută offline)`
+            `• <@${m.id}> — **BAN** | Discord: ${fmtRoleState(false)} | DB: ${fmtDbCooldown(row, now)} → ✅ ACCEPTED by policy (DB aliniat la Discord)`
           );
         } else {
           const res = await enqueueRoleOp({ member: m, roleId: banRole, action: "add", context: `watchdog:ban:enforce:${reason}` });

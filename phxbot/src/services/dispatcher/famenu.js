@@ -661,6 +661,9 @@ function warnRemoveModal() {
 function deleteOrgModal() {
   return modal("famenu:deleteorg_modal", "Delete organizatie", [
     input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
+    input("apply_pk", "Apply PK? (DA/NU)", undefined, true, "DA"),
+    input("pk_scope", "Scope PK (all/members/coleaders/leaders/associated/none)", undefined, true, "all"),
+    input("pk_days", "PK days override (gol=default)", undefined, false, "Ex: 7"),
     input("reason", "Motiv (opțional)", undefined, false, "Ex: desființare")
   ]);
 }
@@ -703,11 +706,12 @@ function editOrgCooldownModal() {
 }
 function max0(n) { return n < 0 ? 0 : n; }
 
-async function forcePkAndRemoveOrgRoles(ctx, member, org, orgId, byUserId) {
+async function forcePkAndRemoveOrgRoles(ctx, member, org, orgId, byUserId, opts = {}) {
+  const applyPk = !!opts.applyPk;
   const pkRole = ctx.settings.pkRole;
-  if (!pkRole) return { ok:false, pkOk:false, rolesOk:false, msg:"PK role nu este setat." };
+  if (applyPk && !pkRole) return { ok:false, pkOk:false, rolesOk:false, msg:"PK role nu este setat." };
 
-  const roleIds = [org.member_role_id, org.leader_role_id, org.co_leader_role_id].filter(Boolean);
+  const roleIds = parseRoleIdsRaw([org.member_role_id, org.leader_role_id, org.co_leader_role_id, org.extra_role_ids || ""].join(","));
 
   let rolesOk = true;
   const roleErrors = [];
@@ -723,7 +727,9 @@ async function forcePkAndRemoveOrgRoles(ctx, member, org, orgId, byUserId) {
 
   const nowTs = now();
   const existing = repo.getCooldown(ctx.db, member.id, "PK");
-  let durationMs = PK_MS;
+  let durationMs = Number.isFinite(Number(opts.pkDaysOverride)) && Number(opts.pkDaysOverride) > 0
+    ? Math.floor(Number(opts.pkDaysOverride) * DAY_MS)
+    : PK_MS;
 
   if (String(org.kind || "").toUpperCase() === "LEGAL") {
     const membership = repo.getMembership(ctx.db, member.id);
@@ -736,15 +742,15 @@ async function forcePkAndRemoveOrgRoles(ctx, member, org, orgId, byUserId) {
 
   const expiresAt = (existing && existing.expires_at > nowTs) ? existing.expires_at : (nowTs + durationMs);
 
-  repo.upsertCooldown(ctx.db, member.id, "PK", expiresAt, orgId, nowTs);
+  if (applyPk) repo.upsertCooldown(ctx.db, member.id, "PK", expiresAt, orgId, nowTs);
   repo.removeMembership(ctx.db, member.id);
   repo.upsertLastOrgState(ctx.db, member.id, orgId, nowTs, byUserId);
 
-  const pkOk = await safeRoleAdd(member, pkRole, `ORG DELETE apply PK for ${member.id}`);
+  const pkOk = applyPk ? await safeRoleAdd(member, pkRole, `ORG DELETE apply PK for ${member.id}`) : true;
 
   const errors = [];
   if (roleErrors.length) errors.push(...roleErrors);
-  if (!pkOk) errors.push(`nu pot aplica rolul PK <@&${pkRole}> (ierarhie/permisiuni/rate limit)`);
+  if (applyPk && !pkOk) errors.push(`nu pot aplica rolul PK <@&${pkRole}> (ierarhie/permisiuni/rate limit)`);
 
   return { ok: (pkOk && rolesOk), pkOk, rolesOk, expiresAt, errors };
 }
@@ -1547,7 +1553,27 @@ export async function handleFamenuModal(interaction, ctx) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     const orgId = Number(interaction.fields.getTextInputValue("org_id")?.trim());
+    const applyPkRaw = interaction.fields.getTextInputValue("apply_pk")?.trim();
+    const pkScopeRaw = String(interaction.fields.getTextInputValue("pk_scope") || "all").trim().toLowerCase();
+    const pkDaysRaw = interaction.fields.getTextInputValue("pk_days")?.trim();
     const reason = interaction.fields.getTextInputValue("reason")?.trim();
+
+    const applyPk = ["da", "yes", "y", "1", "true"].includes(String(applyPkRaw || "").toLowerCase());
+    const pkScopeSet = new Set(
+      (pkScopeRaw === "all" ? ["members", "coleaders", "leaders", "associated"]
+      : pkScopeRaw === "none" ? []
+      : pkScopeRaw.split(/[\s,]+/g).filter(Boolean))
+    );
+    const validScopes = ["members", "coleaders", "leaders", "associated"];
+    if ([...pkScopeSet].some(s => !validScopes.includes(s))) {
+      return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Eroare", "pk_scope invalid. Folosește all/none sau members,coleaders,leaders,associated.")] });
+    }
+    let pkDaysOverride = null;
+    if (pkDaysRaw) {
+      const d = Number(pkDaysRaw);
+      if (!Number.isFinite(d) || d < 0) return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Eroare", "pk_days invalid.")] });
+      pkDaysOverride = Math.floor(d);
+    }
 
     if (!orgId) {
       return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Eroare", "Org ID invalid.")] });
@@ -1558,7 +1584,7 @@ export async function handleFamenuModal(interaction, ctx) {
       return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Eroare", "Org ID inexistent.")] });
     }
 
-    if (!ctx.settings.pkRole) {
+    if (applyPk && !ctx.settings.pkRole) {
       return interaction.editReply({
         embeds: [makeBrandedEmbed(ctx, "Config lipsă", "PK role nu este setat. Setează-l în /famenu → Config → Roluri.")]
       });
@@ -1574,7 +1600,7 @@ export async function handleFamenuModal(interaction, ctx) {
       return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Eroare", msg)] });
     }
 
-    const roleIds = [org.member_role_id, org.leader_role_id, org.co_leader_role_id].filter(Boolean);
+    const roleIds = parseRoleIdsRaw([org.member_role_id, org.leader_role_id, org.co_leader_role_id, org.extra_role_ids || ""].join(","));
     const orgMembers = members.filter(m => roleIds.some(rid => m.roles.cache.has(rid)));
     const nowTs = now();
 
@@ -1584,14 +1610,31 @@ export async function handleFamenuModal(interaction, ctx) {
     let roleIssues = 0;
 
     for (const m of orgMembers.values()) {
-      const res = await forcePkAndRemoveOrgRoles(ctx, m, org, orgId, ctx.uid);
+      const hasBase = !!(org.member_role_id && m.roles.cache.has(org.member_role_id));
+      const hasLeader = !!(org.leader_role_id && m.roles.cache.has(org.leader_role_id));
+      const hasCo = !!(org.co_leader_role_id && m.roles.cache.has(org.co_leader_role_id));
+      const extraIds = parseRoleIdsRaw(org.extra_role_ids || "");
+      const hasAssoc = extraIds.some(rid => m.roles.cache.has(rid));
+      const shouldPk = applyPk && (
+        (pkScopeSet.has("members") && hasBase) ||
+        (pkScopeSet.has("leaders") && hasLeader) ||
+        (pkScopeSet.has("coleaders") && hasCo) ||
+        (pkScopeSet.has("associated") && hasAssoc)
+      );
+
+      const res = await forcePkAndRemoveOrgRoles(ctx, m, org, orgId, ctx.uid, {
+        applyPk: shouldPk,
+        pkDaysOverride
+      });
 
       const exp = res.expiresAt ? Number(res.expiresAt) : null;
       const days = exp ? Math.max(1, Math.ceil((exp - nowTs) / DAY_MS)) : null;
 
       let pkPart;
-      if (res.pkOk) {
+      if (shouldPk && res.pkOk) {
         pkPart = `PK: ✅ ${days}z (${formatRel(exp)})`;
+      } else if (!shouldPk) {
+        pkPart = "PK: — (scope/policy)";
       } else {
         const pkHint = (res.errors || []).find(e => String(e).toUpperCase().includes('PK')) || res.msg || 'eroare necunoscută';
         pkPart = `PK: ❌ ${pkHint}`;
@@ -1603,7 +1646,8 @@ export async function handleFamenuModal(interaction, ctx) {
       const hintText = hints.length ? ` — ${hints.join('; ')}` : '';
 
       details.push(`• <@${m.id}> — ${pkPart} • ${rolePart}${hintText}`);
-      if (res.pkOk) pkApplied++; else pkFailed++;
+      if (shouldPk && res.pkOk) pkApplied++;
+      if (shouldPk && !res.pkOk) pkFailed++;
       if (!res.rolesOk) roleIssues++;
     }
 
@@ -1634,7 +1678,7 @@ ${preview}${remaining ? `
       `**Tip:** ${humanKind(org.kind || org.type)}`,
       `**Membri afectați (Discord):** **${orgMembers.length}**`,
       dbOnly ? `**Intrări DB fără rol (curățate):** **${dbOnly}**` : null,
-      `**PK aplicat:** **${pkApplied}**`,
+      `**PK aplicat:** **${pkApplied}** (apply=${applyPk ? "DA" : "NU"}, scope=${pkScopeRaw || "all"})`,
       pkFailed ? `**PK eșuat:** **${pkFailed}**` : null,
       roleIssues ? `**Roluri org cu probleme:** **${roleIssues}**` : null,
       reason ? `**Motiv:** ${reason}` : null,
