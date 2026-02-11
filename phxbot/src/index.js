@@ -27,8 +27,15 @@ function envBool(name, defaultValue = false) {
   return defaultValue;
 }
 
-const ORG_REAPPLY_ON_JOIN = envBool("ORG_REAPPLY_ON_JOIN", true);
-const COOLDOWN_REAPPLY_ON_JOIN = envBool("COOLDOWN_REAPPLY_ON_JOIN", true);
+function settingBool(db, key, defaultValue, envKey) {
+  const raw = getSetting(db, key);
+  if (raw !== "") {
+    const v = String(raw).trim().toLowerCase();
+    if (["1", "true", "yes", "y", "on"].includes(v)) return true;
+    if (["0", "false", "no", "n", "off"].includes(v)) return false;
+  }
+  return envKey ? envBool(envKey, defaultValue) : defaultValue;
+}
 
 const client = new Client({
   intents: [
@@ -52,10 +59,14 @@ client.on("guildMemberAdd", async (member) => {
   const db = openDb();
   try {
     ensureSchema(db);
+    repo.upsertUserPresence(db, member.id, { lastSeenAt: Date.now(), clearLeft: true });
     const pkRole = getSetting(db, "pk_role_id");
     const banRole = getSetting(db, "ban_role_id");
 
-    if (ORG_REAPPLY_ON_JOIN) {
+    const orgReapplyOnJoin = settingBool(db, "org_reapply_on_join", true, "ORG_REAPPLY_ON_JOIN");
+    const cooldownReapplyOnJoin = settingBool(db, "cooldown_reapply_on_join", true, "COOLDOWN_REAPPLY_ON_JOIN");
+
+    if (orgReapplyOnJoin) {
       const mem = repo.getMembership(db, member.id);
       if (mem?.org_id) {
         const org = repo.getOrg(db, mem.org_id);
@@ -82,14 +93,17 @@ client.on("guildMemberAdd", async (member) => {
       }
     }
 
-    if (COOLDOWN_REAPPLY_ON_JOIN) {
+    if (cooldownReapplyOnJoin) {
       const pk = repo.getCooldown(db, member.id, "PK");
       const ban = repo.getCooldown(db, member.id, "BAN");
+      const transferCooldown = repo.getCooldown(db, member.id, "ORG_SWITCH");
       const now = Date.now();
 
-      if (pk && pk.expires_at > now && pkRole) {
-        await enqueueRoleOp({ member, roleId: pkRole, action: "add", context: "guildMemberAdd:pk" })
-          .catch((e) => console.error("[guildMemberAdd] failed add pkRole", e));
+      if ((pk && pk.expires_at > now) || (transferCooldown && transferCooldown.expires_at > now)) {
+        if (pkRole) {
+          await enqueueRoleOp({ member, roleId: pkRole, action: "add", context: "guildMemberAdd:cooldown" })
+            .catch((e) => console.error("[guildMemberAdd] failed add cooldown role", e));
+        }
       }
       if (ban && ban.expires_at > now && banRole) {
         await enqueueRoleOp({ member, roleId: banRole, action: "add", context: "guildMemberAdd:ban" })
@@ -101,10 +115,21 @@ client.on("guildMemberAdd", async (member) => {
   }
 });
 
+client.on("guildMemberRemove", async (member) => {
+  const db = openDb();
+  try {
+    ensureSchema(db);
+    repo.upsertUserPresence(db, member.id, { lastLeftAt: Date.now() });
+  } finally {
+    db.close();
+  }
+});
+
 
 const _pendingSync = new Map();
 const _lastConflictWarn = new Map();
 const _lastManualOrgRoleAudit = new Map();
+const _lastManualCooldownRoleAudit = new Map();
 
 function _canLogManualOrgRole(userId, roleId, action, windowMs = 2_000) {
   const key = `${userId}:${roleId}:${action}`;
@@ -112,6 +137,15 @@ function _canLogManualOrgRole(userId, roleId, action, windowMs = 2_000) {
   const now = Date.now();
   if (now - last < windowMs) return false;
   _lastManualOrgRoleAudit.set(key, now);
+  return true;
+}
+
+function _canLogManualCooldownRole(userId, roleId, action, windowMs = 2_000) {
+  const key = `${userId}:${roleId}:${action}`;
+  const last = _lastManualCooldownRoleAudit.get(key) || 0;
+  const now = Date.now();
+  if (now - last < windowMs) return false;
+  _lastManualCooldownRoleAudit.set(key, now);
   return true;
 }
 
@@ -152,6 +186,7 @@ client.on("guildMemberUpdate", (oldMember, newMember) => {
     const db = openDb();
     try {
       ensureSchema(db);
+      repo.upsertUserPresence(db, newMember.id, { lastSeenAt: Date.now(), clearLeft: true });
 
       const auditChannelId = getSetting(db, "audit_channel_id");
       const brandText = getSetting(db, "brand_text") || "Phoenix Faction Manager";
@@ -188,6 +223,7 @@ client.on("guildMemberUpdate", (oldMember, newMember) => {
       }
 
       const memRes = await syncMemberOrgsDiscordToDb({ db, guild: newMember.guild, member: newMember, audit });
+      await enforceCooldownsDbToDiscord({ db, guild: newMember.guild, member: newMember, audit });
       if (memRes?.action === "DB_REMOVE" && memRes?.prevOrgId) {
         repo.upsertLastOrgState(db, newMember.id, memRes.prevOrgId, Date.now(), "DISCORD_ROLE");
       }
@@ -245,6 +281,37 @@ client.on("guildMemberUpdate", (oldMember, newMember) => {
                 `**Din:** **${fromOrg.name}** → **${toOrg.name}**`,
                 `**Rol nou:** <@&${toRoleId}>`,
                 `**DB:** sincronizat`,
+                `**De către:** <@${execId}>`
+              ].join("\n")
+            );
+          }
+        }
+      }
+
+      const pkRoleId = getSetting(db, "pk_role_id");
+      if (pkRoleId) {
+        const hadPkRole = oldMember?.roles?.cache?.has(pkRoleId) || false;
+        const hasPkRole = newMember?.roles?.cache?.has(pkRoleId) || false;
+        if (hadPkRole !== hasPkRole && _canLogManualCooldownRole(newMember.id, pkRoleId, hasPkRole ? "add" : "remove")) {
+          const execId = await findRoleUpdateExecutor({
+            guild: newMember.guild,
+            targetUserId: newMember.id,
+            roleId: pkRoleId,
+            action: hasPkRole ? "add" : "remove"
+          });
+          if (execId && execId !== botId) {
+            const pk = repo.getCooldown(db, newMember.id, "PK");
+            const tr = repo.getCooldown(db, newMember.id, "ORG_SWITCH");
+            const nowTs = Date.now();
+            const reason = pk && pk.expires_at > nowTs
+              ? "PK activ"
+              : (tr && tr.expires_at > nowTs ? "TRANSFER activ" : "niciun cooldown activ");
+            await audit(
+              `🛠️ Rol cooldown ${hasPkRole ? "adăugat" : "scos"} manual`,
+              [
+                `**Țintă:** <@${newMember.id}> (\`${newMember.id}\`)`,
+                `**Rol:** <@&${pkRoleId}>`,
+                `**Context cooldown:** ${reason}`,
                 `**De către:** <@${execId}>`
               ].join("\n")
             );
