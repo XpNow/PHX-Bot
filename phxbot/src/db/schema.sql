@@ -20,6 +20,11 @@ CREATE TABLE IF NOT EXISTS orgs (
   transfer_cooldown_days INTEGER,
   no_cooldown_after_days INTEGER,
   no_cooldown_types TEXT NOT NULL DEFAULT '',
+  allow_coleaders_set_rank INTEGER NOT NULL DEFAULT 0,
+  coleader_can_promote_members INTEGER NOT NULL DEFAULT 0,
+  coleader_can_demote_members INTEGER NOT NULL DEFAULT 0,
+  coleader_can_manage_coleaders INTEGER NOT NULL DEFAULT 0,
+  setrank_whitelist_user_ids TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL
 );
 

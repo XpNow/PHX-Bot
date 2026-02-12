@@ -79,7 +79,12 @@ export function updateOrgEditable(db, orgId, payload) {
     "pk_cooldown_days",
     "transfer_cooldown_days",
     "no_cooldown_after_days",
-    "no_cooldown_types"
+    "no_cooldown_types",
+    "allow_coleaders_set_rank",
+    "coleader_can_promote_members",
+    "coleader_can_demote_members",
+    "coleader_can_manage_coleaders",
+    "setrank_whitelist_user_ids"
   ];
   const sets = [];
   const vals = [];

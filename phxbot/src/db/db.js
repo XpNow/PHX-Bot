@@ -26,6 +26,17 @@ export function ensureSchema(db) {
     leader_role_id TEXT NOT NULL,
     co_leader_role_id TEXT,
     member_cap INTEGER,
+    co_leader_cap INTEGER,
+    extra_role_ids TEXT NOT NULL DEFAULT '',
+    pk_cooldown_days INTEGER,
+    transfer_cooldown_days INTEGER,
+    no_cooldown_after_days INTEGER,
+    no_cooldown_types TEXT NOT NULL DEFAULT '',
+    allow_coleaders_set_rank INTEGER NOT NULL DEFAULT 0,
+    coleader_can_promote_members INTEGER NOT NULL DEFAULT 0,
+    coleader_can_demote_members INTEGER NOT NULL DEFAULT 0,
+    coleader_can_manage_coleaders INTEGER NOT NULL DEFAULT 0,
+    setrank_whitelist_user_ids TEXT NOT NULL DEFAULT '',
     created_at INTEGER NOT NULL
   );
   CREATE TABLE IF NOT EXISTS memberships (
@@ -117,6 +128,11 @@ export function ensureSchema(db) {
   ensureColumn("orgs", "transfer_cooldown_days", "transfer_cooldown_days INTEGER");
   ensureColumn("orgs", "no_cooldown_after_days", "no_cooldown_after_days INTEGER");
   ensureColumn("orgs", "no_cooldown_types", "no_cooldown_types TEXT NOT NULL DEFAULT ''");
+  ensureColumn("orgs", "allow_coleaders_set_rank", "allow_coleaders_set_rank INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("orgs", "coleader_can_promote_members", "coleader_can_promote_members INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("orgs", "coleader_can_demote_members", "coleader_can_demote_members INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("orgs", "coleader_can_manage_coleaders", "coleader_can_manage_coleaders INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("orgs", "setrank_whitelist_user_ids", "setrank_whitelist_user_ids TEXT NOT NULL DEFAULT ''");
   ensureColumn("transfer_requests", "retry_count", "retry_count INTEGER NOT NULL DEFAULT 0");
 
   const orgCols = db.prepare("PRAGMA table_info(orgs)").all().map(r => r.name);

@@ -23,7 +23,6 @@ import {
   safeRoleRemove,
   getOrgRank,
   canManageTargetRank,
-  canSetRank,
   showModalSafe,
   fetchMembersWithRetry
 } from "./shared.js";
@@ -255,7 +254,7 @@ async function orgPanelView(interaction, ctx, orgId) {
   );
 
   const actorRank = getOrgRank(ctx.member, org);
-  const canSetRanks = ctx.perms.staff || actorRank === "LEADER";
+  const canSetRanks = canOpenSetRank(ctx, org, actorRank);
   const buttons = [
     btn(`org:${orgId}:remove_pk`, "Remove (PK)", ButtonStyle.Danger, "💀"),
     btn(`org:${orgId}:add`, "Add membru", ButtonStyle.Success, "➕"),
@@ -265,7 +264,7 @@ async function orgPanelView(interaction, ctx, orgId) {
     btn(`org:${orgId}:transfer`, "Transfer", ButtonStyle.Secondary, "🔁"),
     btn(`org:${orgId}:transfers`, "Transfers", ButtonStyle.Secondary, "📨"),
     canSetRanks ? btn(`org:${orgId}:setrank`, "Set rank", ButtonStyle.Secondary, "🪪") : null,
-    String(org.kind).toUpperCase() === "LEGAL" ? btn(`org:${orgId}:delegations`, "Permisiuni", ButtonStyle.Secondary, "🛂") : null,
+    (ctx.perms.staff || actorRank === "LEADER") ? btn(`org:${orgId}:permissions`, "Permisiuni", ButtonStyle.Secondary, "🛂") : null,
     btn(`fmenu:back`, "Back", ButtonStyle.Secondary, "⬅️"),
   ];
 
@@ -298,34 +297,36 @@ function setRankModal(orgId) {
   ]);
 }
 
-function delegateAddModal(orgId) {
-  return modal(`org:${orgId}:delegate_add_modal`, "Adaugă delegat", [
-    input("user", "User ID/mention", undefined, true, "Ex: @user"),
-    input("can_demote", "Poate demota Co-Leader? (DA/NU)", undefined, true, "NU")
-  ]);
-}
 
-function delegateRemoveModal(orgId) {
-  return modal(`org:${orgId}:delegate_remove_modal`, "Șterge delegat", [
-    input("user", "User ID/mention", undefined, true, "Ex: @user")
-  ]);
-}
-
-async function delegationsView(interaction, ctx, orgId) {
+async function setRankPermissionsView(interaction, ctx, orgId) {
   const org = repo.getOrg(ctx.db, orgId);
   if (!org) return sendEphemeral(interaction, "Eroare", "Organizația nu există.");
   const rank = getOrgRank(ctx.member, org);
   if (!ctx.perms.staff && rank !== "LEADER") {
-    return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar Leader-ul (sau staff) poate gestiona delegări.");
+    return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar Leader-ul (sau staff) poate gestiona permisiunile Set Rank.");
   }
+
+  const p = orgSetRankPolicy(org);
   const rows = repo.listOrgDelegates(ctx.db, orgId);
-  const desc = rows.length
-    ? rows.slice(0, 20).map(r => `• <@${r.user_id}> — promote co-leader: **${Number(r.can_promote_coleader) ? "DA" : "NU"}** | demote: **${Number(r.can_demote_coleader) ? "DA" : "NU"}**`).join("\n")
-    : "Nu există delegați.";
-  const emb = makeEmbed(`Delegări • ${org.name}`, desc);
+  const wl = rows.length
+    ? rows.slice(0, 25).map(r => `• <@${r.user_id}> — can_promote_to_coleader: **${Number(r.can_promote_coleader) ? "DA" : "NU"}** | can_demote_from_coleader: **${Number(r.can_demote_coleader) ? "DA" : "NU"}**`).join("\n")
+    : "(gol)";
+
+  const emb = makeEmbed(`Permisiuni Set Rank • ${org.name}`, [
+    `• Co-Leader poate Set Rank: **${p.allowCoLeadersSetRank ? "DA" : "NU"}**`,
+    `• Co-Leader poate promova membri: **${p.coLeaderCanPromoteMembers ? "DA" : "NU"}**`,
+    `• Co-Leader poate demova membri: **${p.coLeaderCanDemoteMembers ? "DA" : "NU"}**`,
+    `• Co-Leader poate gestiona co-leaderi: **${p.coLeaderCanManageCoLeaders ? "DA" : "NU"}**`,
+    "",
+    "**Whitelist IDs (Set Rank):**",
+    wl
+  ].join("\n"));
+
   const buttons = [
-    btn(`org:${orgId}:delegate_add`, "Adaugă", ButtonStyle.Success, "➕"),
-    btn(`org:${orgId}:delegate_remove`, "Șterge", ButtonStyle.Danger, "🗑️"),
+    btn(`org:${orgId}:permissions_set`, "Toggle-uri", ButtonStyle.Secondary, "⚙️"),
+    btn(`org:${orgId}:permissions_wl_add`, "Whitelist add", ButtonStyle.Success, "➕"),
+    btn(`org:${orgId}:permissions_wl_remove`, "Whitelist remove", ButtonStyle.Danger, "🗑️"),
+    btn(`org:${orgId}:permissions_refresh`, "Refresh", ButtonStyle.Secondary, "🔄"),
     btn(`org:${orgId}:back`, "Back", ButtonStyle.Secondary, "⬅️")
   ];
   return sendEphemeral(interaction, emb.data.title, emb.data.description, rowsFromButtons(buttons));
@@ -375,6 +376,58 @@ function prettyRank(rank) {
   if (rank === "COLEADER") return "CO-LEADER";
   return String(rank || "—");
 }
+
+
+function boolFlag(v, def = false) {
+  if (v === null || v === undefined || v === "") return def;
+  return Number(v) === 1 || String(v).toLowerCase() === "true";
+}
+
+function orgSetRankPolicy(org) {
+  return {
+    allowCoLeadersSetRank: boolFlag(org?.allow_coleaders_set_rank, false),
+    coLeaderCanPromoteMembers: boolFlag(org?.coleader_can_promote_members, false),
+    coLeaderCanDemoteMembers: boolFlag(org?.coleader_can_demote_members, false),
+    coLeaderCanManageCoLeaders: boolFlag(org?.coleader_can_manage_coleaders, false)
+  };
+}
+
+function syncSetRankWhitelistCache(ctx, orgId) {
+  const ids = repo.listOrgDelegates(ctx.db, orgId).map(r => String(r.user_id));
+  repo.updateOrgEditable(ctx.db, orgId, { setrank_whitelist_user_ids: ids.join(",") });
+}
+
+function canOpenSetRank(ctx, org, actorRank) {
+  if (ctx.perms.staff || actorRank === "LEADER") return true;
+  const wl = repo.getOrgDelegate(ctx.db, org.id, ctx.uid);
+  if (wl) return true;
+  const policy = orgSetRankPolicy(org);
+  return actorRank === "COLEADER" && policy.allowCoLeadersSetRank;
+}
+
+function setRankPermissionsModal(orgId, org) {
+  return modal(`org:${orgId}:setrank_perms_modal`, "Permisiuni Set Rank", [
+    input("allow_co_setrank", "Co-Leader poate Set Rank? DA/NU", undefined, true, boolFlag(org?.allow_coleaders_set_rank, false) ? "DA" : "NU"),
+    input("co_promote_members", "Co-L poate promova membri? DA/NU", undefined, true, boolFlag(org?.coleader_can_promote_members, false) ? "DA" : "NU"),
+    input("co_demote_members", "Co-L poate demova membri? DA/NU", undefined, true, boolFlag(org?.coleader_can_demote_members, false) ? "DA" : "NU"),
+    input("co_manage_coleaders", "Co-L poate gestiona co-leaderi? DA/NU", undefined, true, boolFlag(org?.coleader_can_manage_coleaders, false) ? "DA" : "NU")
+  ]);
+}
+
+function setRankWhitelistAddModal(orgId) {
+  return modal(`org:${orgId}:setrank_whitelist_add_modal`, "Whitelist Set Rank: Add", [
+    input("user", "User ID/mention", undefined, true, "Ex: @user"),
+    input("can_promote", "can_promote_to_coleader DA/NU", undefined, true, "DA"),
+    input("can_demote", "can_demote_from_coleader DA/NU", undefined, true, "NU")
+  ]);
+}
+
+function setRankWhitelistRemoveModal(orgId) {
+  return modal(`org:${orgId}:setrank_whitelist_remove_modal`, "Whitelist Set Rank: Remove", [
+    input("user", "User ID/mention", undefined, true, "Ex: @user")
+  ]);
+}
+
 
 async function addToOrg(ctx, targetMember, orgId, role) {
   return withUserLock(targetMember.id, async () => {  const org = repo.getOrg(ctx.db, orgId);
@@ -592,102 +645,375 @@ if (!ctx.perms.staff && (targetRank === "LEADER" || targetRank === "COLEADER")) 
 }
 
 async function setMemberRank(ctx, targetMember, orgId, desiredRank) {
-  return withUserLock(targetMember.id, async () => {  const org = repo.getOrg(ctx.db, orgId);
-  if (!org) {
-    console.error(`[RANK] Org not found for orgId ${orgId}`);
-    return { ok:false, msg:"Organizația nu există." };
-  }
-  const actorRank = getOrgRank(ctx.member, org);
-  const delegate = repo.getOrgDelegate(ctx.db, orgId, ctx.uid);
-  const canDelegatedColeg = String(org.kind).toUpperCase() === "LEGAL"
-    && !!delegate
-    && Number(delegate.can_promote_coleader) === 1
-    && (desiredRank === "MEMBER" || desiredRank === "COLEADER" || desiredRank === "CO_LEADER");
-  if (!ctx.perms.staff && actorRank !== "LEADER" && !canDelegatedColeg) {
-    return { ok:false, msg:"Doar liderul (sau delegații pentru co-leader în org legală) poate schimba rank-urile." };
-  }
-  const rankCheck = canSetRank(ctx, org, desiredRank, targetMember, {
-    delegated: canDelegatedColeg,
-    canDemoteCoLeader: Number(delegate?.can_demote_coleader) === 1
-  });
-  if (!rankCheck.ok) return { ok:false, msg: rankCheck.msg };
+  return withUserLock(targetMember.id, async () => {
+    const org = repo.getOrg(ctx.db, orgId);
+    if (!org) return { ok:false, msg:"Organizația nu există." };
 
-  const memberRoleCheck = roleCheck(ctx, org.member_role_id, "membru");
-  if (!memberRoleCheck.ok) return { ok:false, msg: memberRoleCheck.msg };
-  if (!targetMember.roles.cache.has(org.member_role_id)) {
-    const addedMember = await safeRoleAdd(targetMember, org.member_role_id, `Ensure org role for ${targetMember.id}`);
-    if (!addedMember) return { ok:false, msg:"Nu pot adăuga rolul organizației (permisiuni lipsă)." };
-    repo.upsertMembership(ctx.db, targetMember.id, orgId, "MEMBER");
-  }
+    const actorRank = getOrgRank(ctx.member, org);
+    const targetRank = getOrgRank(targetMember, org);
+    const policy = orgSetRankPolicy(org);
+    const whitelist = repo.getOrgDelegate(ctx.db, orgId, ctx.uid);
 
-  const leaderRoleCheck = org.leader_role_id ? roleCheck(ctx, org.leader_role_id, "leader") : null;
-  const coLeaderRoleCheck = org.co_leader_role_id ? roleCheck(ctx, org.co_leader_role_id, "co-leader") : null;
-  if (org.leader_role_id && !leaderRoleCheck?.ok) return { ok:false, msg: leaderRoleCheck.msg };
-  if (org.co_leader_role_id && !coLeaderRoleCheck?.ok) return { ok:false, msg: coLeaderRoleCheck.msg };
+    const logBlocked = async (reason) => {
+      await audit(ctx, "⛔ Set Rank blocat", [
+        `**Org:** **${org.name}** (\`${orgId}\`)`,
+        `**Actor:** <@${ctx.uid}> (rank: **${actorRank}**)`,
+        `**Țintă:** <@${targetMember.id}> (rank curent: **${prettyRank(targetRank)}**)`,
+        `**Rank dorit:** **${prettyRank(desiredRank)}**`,
+        `**Motiv blocare:** ${reason}`
+      ].join("\n"), COLORS.GLOBAL);
+    };
 
-  if (desiredRank === "LEADER") {
-    if (org.co_leader_role_id) {
-      await safeRoleRemove(targetMember, org.co_leader_role_id, `Unset co-leader for ${targetMember.id}`);
+    if (!["LEADER", "COLEADER", "MEMBER"].includes(desiredRank)) {
+      const msg = "Rank invalid (LEADER/COLEADER/MEMBER).";
+      await logBlocked(msg);
+      return { ok:false, msg };
     }
-    const added = await safeRoleAdd(targetMember, org.leader_role_id, `Set leader for ${targetMember.id}`);
-    if (!added) return { ok:false, msg:"Nu pot seta rolul de Leader (permisiuni lipsă)." };
-  } else if (desiredRank === "COLEADER") {
-    if (!org.co_leader_role_id) return { ok:false, msg:"Rolul de Co-Leader nu este setat." };
-    if (!ctx.perms.staff) {
-      const fetchRes = await fetchMembersWithRetry(ctx.guild, "RANK_CAP");
-      if (!fetchRes.members) {
-        const retryMsg = fetchRes.retryMs > 0
-          ? `Discord rate limit. Încearcă din nou în ~${Math.ceil(fetchRes.retryMs / 1000)}s.`
-          : (fetchRes.error || "Nu pot prelua membrii guild-ului.");
-        return { ok:false, msg: retryMsg };
-      }
 
-      const alreadyCo = targetMember.roles.cache.has(org.co_leader_role_id);
-      let discordCount = 0;
-      const coLeaderRole = ctx.guild.roles.cache.get(org.co_leader_role_id);
-      if (coLeaderRole) {
-        discordCount = coLeaderRole.members.filter(m => !m.user?.bot).size;
-      }
+    if (!ctx.perms.staff && desiredRank === "LEADER") {
+      const msg = "Doar staff poate seta rank-ul LEADER.";
+      await logBlocked(msg);
+      return { ok:false, msg };
+    }
 
-      const dbCount = repo
-        .listMembersByOrg(ctx.db, orgId)
-        .filter(r => {
+    if (!ctx.perms.staff && targetRank === "LEADER") {
+      const msg = "Doar staff poate demova/gestiona un LEADER.";
+      await logBlocked(msg);
+      return { ok:false, msg };
+    }
+
+    let mode = "NONE";
+    if (ctx.perms.staff || actorRank === "LEADER") mode = "FULL";
+    else if (actorRank === "COLEADER" && policy.allowCoLeadersSetRank) mode = "COLEADER";
+    else if (whitelist) mode = "WHITELIST";
+
+    if (mode === "NONE") {
+      const msg = "Nu ai drepturi de Set Rank (nici staff/leader, nici co-leader permis, nici whitelist).";
+      await logBlocked(msg);
+      return { ok:false, msg };
+    }
+
+    if (!ctx.perms.staff && mode === "COLEADER") {
+      const touchingCoLeader = desiredRank === "COLEADER" || targetRank === "COLEADER";
+      if (desiredRank === "COLEADER") {
+        if (!policy.coLeaderCanPromoteMembers) {
+          const msg = "Policy: coleader_can_promote_members=NU.";
+          await logBlocked(msg);
+          return { ok:false, msg };
+        }
+        if (!policy.coLeaderCanManageCoLeaders) {
+          const msg = "Policy: coleader_can_manage_coleaders=NU.";
+          await logBlocked(msg);
+          return { ok:false, msg };
+        }
+        if (targetRank !== "MEMBER") {
+          const msg = "Co-Leader poate promova la COLEADER doar un MEMBER.";
+          await logBlocked(msg);
+          return { ok:false, msg };
+        }
+      }
+      if (desiredRank === "MEMBER") {
+        if (targetRank === "MEMBER") {
+          // noop allowed
+        } else if (targetRank === "COLEADER") {
+          if (!policy.coLeaderCanDemoteMembers) {
+            const msg = "Policy: coleader_can_demote_members=NU.";
+            await logBlocked(msg);
+            return { ok:false, msg };
+          }
+          if (!policy.coLeaderCanManageCoLeaders) {
+            const msg = "Policy: coleader_can_manage_coleaders=NU.";
+            await logBlocked(msg);
+            return { ok:false, msg };
+          }
+        } else {
+          const msg = "Co-Leader nu poate seta rank pentru această țintă.";
+          await logBlocked(msg);
+          return { ok:false, msg };
+        }
+      }
+      if (touchingCoLeader && !policy.coLeaderCanManageCoLeaders) {
+        const msg = "Policy: coleader_can_manage_coleaders=NU.";
+        await logBlocked(msg);
+        return { ok:false, msg };
+      }
+    }
+
+    if (!ctx.perms.staff && mode === "WHITELIST") {
+      if (!whitelist) {
+        const msg = "Whitelist invalid.";
+        await logBlocked(msg);
+        return { ok:false, msg };
+      }
+      if (desiredRank === "COLEADER") {
+        if (targetRank !== "MEMBER") {
+          const msg = "Whitelist: poți promova la COLEADER doar MEMBER → COLEADER.";
+          await logBlocked(msg);
+          return { ok:false, msg };
+        }
+        if (Number(whitelist.can_promote_coleader) !== 1) {
+          const msg = "Whitelist: can_promote_to_coleader=NU.";
+          await logBlocked(msg);
+          return { ok:false, msg };
+        }
+      } else if (desiredRank === "MEMBER") {
+        if (targetRank !== "COLEADER") {
+          const msg = "Whitelist: poți demova doar COLEADER → MEMBER.";
+          await logBlocked(msg);
+          return { ok:false, msg };
+        }
+        if (Number(whitelist.can_demote_coleader) !== 1) {
+          const msg = "Whitelist: can_demote_from_coleader=NU.";
+          await logBlocked(msg);
+          return { ok:false, msg };
+        }
+      } else {
+        const msg = "Whitelist nu permite operațiuni cu LEADER.";
+        await logBlocked(msg);
+        return { ok:false, msg };
+      }
+    }
+
+    const memberRoleCheck = roleCheck(ctx, org.member_role_id, "membru");
+    if (!memberRoleCheck.ok) return { ok:false, msg: memberRoleCheck.msg };
+    if (!targetMember.roles.cache.has(org.member_role_id)) {
+      const addedMember = await safeRoleAdd(targetMember, org.member_role_id, `Ensure org role for ${targetMember.id}`);
+      if (!addedMember) return { ok:false, msg:"Nu pot adăuga rolul organizației (permisiuni lipsă)." };
+      repo.upsertMembership(ctx.db, targetMember.id, orgId, "MEMBER");
+    }
+
+    const leaderRoleCheck = org.leader_role_id ? roleCheck(ctx, org.leader_role_id, "leader") : null;
+    const coLeaderRoleCheck = org.co_leader_role_id ? roleCheck(ctx, org.co_leader_role_id, "co-leader") : null;
+    if (org.leader_role_id && !leaderRoleCheck?.ok) return { ok:false, msg: leaderRoleCheck.msg };
+    if (org.co_leader_role_id && !coLeaderRoleCheck?.ok) return { ok:false, msg: coLeaderRoleCheck.msg };
+
+    if (desiredRank === "LEADER") {
+      if (org.co_leader_role_id) await safeRoleRemove(targetMember, org.co_leader_role_id, `Unset co-leader for ${targetMember.id}`);
+      const added = await safeRoleAdd(targetMember, org.leader_role_id, `Set leader for ${targetMember.id}`);
+      if (!added) return { ok:false, msg:"Nu pot seta rolul de Leader (permisiuni lipsă)." };
+    } else if (desiredRank === "COLEADER") {
+      if (!org.co_leader_role_id) return { ok:false, msg:"Rolul de Co-Leader nu este setat." };
+      if (!ctx.perms.staff) {
+        const fetchRes = await fetchMembersWithRetry(ctx.guild, "RANK_CAP");
+        if (!fetchRes.members) {
+          const retryMsg = fetchRes.retryMs > 0
+            ? `Discord rate limit. Încearcă din nou în ~${Math.ceil(fetchRes.retryMs / 1000)}s.`
+            : (fetchRes.error || "Nu pot prelua membrii guild-ului.");
+          return { ok:false, msg: retryMsg };
+        }
+        const alreadyCo = targetMember.roles.cache.has(org.co_leader_role_id);
+        const coLeaderRole = ctx.guild.roles.cache.get(org.co_leader_role_id);
+        const discordCount = coLeaderRole ? coLeaderRole.members.filter(m => !m.user?.bot).size : 0;
+        const dbCount = repo.listMembersByOrg(ctx.db, orgId).filter(r => {
           const role = String(r.role || "").toUpperCase();
           return role === "COLEADER" || role === "CO_LEADER";
         }).length;
-
-      const current = Math.max(discordCount, dbCount);
-      const cap = Number.isFinite(Number(org.co_leader_cap)) && Number(org.co_leader_cap) > 0
-        ? Math.floor(Number(org.co_leader_cap))
-        : (String(org.kind).toUpperCase() === "ILLEGAL" ? 2 : null);
-      if (cap && !alreadyCo && current >= cap) {
-        return { ok:false, msg:`Organizația a atins capul de **${cap}** roluri de **Co-Leader**.` };
+        const current = Math.max(discordCount, dbCount);
+        const cap = Number.isFinite(Number(org.co_leader_cap)) && Number(org.co_leader_cap) > 0
+          ? Math.floor(Number(org.co_leader_cap))
+          : (String(org.kind).toUpperCase() === "ILLEGAL" ? 2 : null);
+        if (cap && !alreadyCo && current >= cap) return { ok:false, msg:`Organizația a atins capul de **${cap}** roluri de **Co-Leader**.` };
       }
+      if (org.leader_role_id) await safeRoleRemove(targetMember, org.leader_role_id, `Unset leader for ${targetMember.id}`);
+      const added = await safeRoleAdd(targetMember, org.co_leader_role_id, `Set co-leader for ${targetMember.id}`);
+      if (!added) return { ok:false, msg:"Nu pot seta rolul de Co-Leader (permisiuni lipsă)." };
+    } else {
+      if (org.leader_role_id) await safeRoleRemove(targetMember, org.leader_role_id, `Unset leader for ${targetMember.id}`);
+      if (org.co_leader_role_id) await safeRoleRemove(targetMember, org.co_leader_role_id, `Unset co-leader for ${targetMember.id}`);
     }
-if (org.leader_role_id) {
-      await safeRoleRemove(targetMember, org.leader_role_id, `Unset leader for ${targetMember.id}`);
-    }
-    const added = await safeRoleAdd(targetMember, org.co_leader_role_id, `Set co-leader for ${targetMember.id}`);
-    if (!added) return { ok:false, msg:"Nu pot seta rolul de Co-Leader (permisiuni lipsă)." };
-  } else {
-    if (org.leader_role_id) {
-      await safeRoleRemove(targetMember, org.leader_role_id, `Unset leader for ${targetMember.id}`);
-    }
-    if (org.co_leader_role_id) {
-      await safeRoleRemove(targetMember, org.co_leader_role_id, `Unset co-leader for ${targetMember.id}`);
+
+    repo.upsertMembership(ctx.db, targetMember.id, orgId, desiredRank);
+
+    await audit(ctx, "🎖️ Rank actualizat", [
+      `**Țintă:** <@${targetMember.id}> (\`${targetMember.id}\`)`,
+      `**Organizație:** **${org.name}** (\`${orgId}\`)`,
+      `**Rank nou:** **${prettyRank(desiredRank)}**`,
+      `**Policy actor mode:** ${mode}`,
+      `**De către:** <@${ctx.uid}>`
+    ].join("\n"), COLORS.GLOBAL);
+    return { ok:true };
+  });
+}
+
+async function requestTransfer(ctx, orgId, targetMemberId, toOrgId) {
+  const org = repo.getOrg(ctx.db, orgId);
+  if (!org) return { ok:false, msg:"Organizația nu există." };
+
+  const toOrg = repo.getOrg(ctx.db, toOrgId);
+  if (!toOrg) return { ok:false, msg:"Organizația destinație nu există." };
+
+  if (!ctx.perms.staff) {
+    const manageable = resolveManageableOrgs(ctx).some(m => m.org.id === orgId);
+    if (!manageable) return { ok:false, msg:"Nu ai permisiuni pentru această organizație." };
+  }
+
+  const member = await ctx.guild.members.fetch(targetMemberId).catch(() => null);
+  if (!member) return { ok:false, msg:"Userul nu este în guild." };
+
+  const activeTransfer = repo.findActiveTransferByUser(ctx.db, targetMemberId);
+  if (activeTransfer) return { ok:false, msg:"Userul are deja un transfer în curs." };
+
+  const membership = repo.getMembership(ctx.db, targetMemberId);
+  if (!membership || String(membership.org_id) !== String(orgId)) {
+    return { ok:false, msg:"Userul nu este membru în organizația ta." };
+  }
+  if (String(toOrgId) === String(orgId)) {
+    return { ok:false, msg:"Organizația destinație trebuie să fie diferită." };
+  }
+
+  if (String(org.kind).toUpperCase() !== String(toOrg.kind).toUpperCase()) {
+    return { ok:false, msg:"Transferurile sunt permise doar între organizații de același tip (LEGAL↔LEGAL, ILLEGAL↔ILLEGAL)." };
+  }
+
+  const cap = effectiveIllegalCap(toOrg);
+  if (cap) {
+    const current = countOrgMembers(ctx, toOrg);
+    if (current + 1 > cap) {
+      return { ok:false, msg:`Organizația destinație a atins capul de **${cap}** membri.` };
     }
   }
 
-  repo.upsertMembership(ctx.db, targetMember.id, orgId, desiredRank);
+  const requestId = generateTransferId(ctx);
+  repo.createTransferRequest(ctx.db, {
+    request_id: requestId,
+    from_org_id: orgId,
+    to_org_id: toOrgId,
+    user_id: targetMemberId,
+    status: "PENDING",
+    requested_by: ctx.uid,
+    created_at: now()
+  });
 
-  await audit(ctx, "🎖️ Rank actualizat", [
-    `**Țintă:** <@${targetMember.id}> (\`${targetMember.id}\`)`,
-    `**Organizație:** **${org.name}** (\`${orgId}\`)`,
-    `**Rank nou:** **${prettyRank(desiredRank)}**`,
+  await audit(ctx, "🔁 Transfer solicitat", [
+    `**Transfer ID:** \`${requestId}\``,
+    `**Țintă:** <@${targetMemberId}> (\`${targetMemberId}\`)`,
+    `**Din:** **${org.name}**`,
+    `**Către:** **${toOrg.name}**`,
     `**De către:** <@${ctx.uid}>`
   ].join("\n"), COLORS.GLOBAL);
-  return { ok:true };
+
+  return { ok:true, requestId, toOrgName: toOrg.name };
+}
+
+function resolveOrgByInput(ctx, input) {
+  const raw = String(input || "").trim();
+  if (!raw) return { ok: false, msg: "Org invalid." };
+
+  const roleId = raw.replace(/[<@&#>]/g, "").trim();
+  const orgs = repo.listOrgs(ctx.db);
+
+  if (/^\d{5,25}$/.test(roleId)) {
+    const byRole = orgs.find(o => String(o.member_role_id) === String(roleId));
+    if (byRole) return { ok: true, org: byRole };
+    const byId = orgs.find(o => String(o.id) === String(roleId));
+    if (byId) return { ok: true, org: byId };
+  }
+
+  const needle = raw.toLowerCase();
+  const matches = orgs.filter(o => String(o.name || "").toLowerCase().includes(needle));
+  if (matches.length === 1) return { ok: true, org: matches[0] };
+  if (matches.length > 1) {
+    const sample = matches.slice(0, 5).map(o => `**${o.name}**`).join(", ");
+    return { ok: false, msg: `Am găsit mai multe organizații: ${sample}. Fii mai specific.` };
+  }
+
+  return { ok: false, msg: "Nu pot găsi organizația. Folosește @rol sau numele exact." };
+}
+
+async function processTransferDecision(ctx, orgId, requestId, action) {
+  const req = repo.getTransferRequest(ctx.db, requestId);
+  if (!req) return { ok:false, msg:"Transfer ID invalid." };
+  if (req.status !== "PENDING") return { ok:false, msg:"Transferul nu mai este în așteptare." };
+
+  if (String(req.to_org_id) !== String(orgId)) {
+    return { ok:false, msg:"Nu ai permisiuni pentru acest transfer." };
+  }
+
+  const toOrg = repo.getOrg(ctx.db, req.to_org_id);
+  const fromOrg = repo.getOrg(ctx.db, req.from_org_id);
+  if (!toOrg || !fromOrg) return { ok:false, msg:"Organizația din transfer nu există." };
+
+  const rank = getOrgRank(ctx.member, toOrg);
+  if (rank !== "LEADER" && rank !== "COLEADER") {
+    return { ok:false, msg:"Nu ai permisiuni de Leader/Co-Leader pentru această organizație." };
+  }
+
+  if (action === "reject") {
+    repo.updateTransferRequestStatus(ctx.db, requestId, "REJECTED", { approved_by: ctx.uid, approved_at: now() });
+    await audit(ctx, "❌ Transfer respins", [
+      `**Transfer ID:** \`${requestId}\``,
+      `**Țintă:** <@${req.user_id}> (\`${req.user_id}\`)`,
+      `**Din:** **${fromOrg.name}**`,
+      `**Către:** **${toOrg.name}**`,
+      `**De către:** <@${ctx.uid}>`
+    ].join("\n"), COLORS.ERROR);
+    return { ok:true };
+  }
+
+  const member = await ctx.guild.members.fetch(req.user_id).catch(() => null);
+  if (!member) return { ok:false, msg:"Userul nu este în guild." };
+
+  const failApprove = async (step, reason, details = "") => {
+    repo.clearCooldown(ctx.db, member.id, "ORG_SWITCH");
+    await audit(ctx, "❌ Transfer eșuat (rollback)", [
+      `**Transfer ID:** \`${requestId}\``,
+      `**Țintă:** <@${req.user_id}> (\`${req.user_id}\`)`,
+      `**Pas eșuat:** **${step}**`,
+      `**Motiv:** ${reason}`,
+      details ? `**Detalii:** ${details}` : null,
+      `**De către:** <@${ctx.uid}>`
+    ].filter(Boolean).join("\n"), COLORS.ERROR);
+    return { ok:false, msg:`Transfer eșuat la pasul \`${step}\`: ${reason}` };
+  };
+
+  const cap = effectiveIllegalCap(toOrg);
+  if (cap) {
+    const current = countOrgMembers(ctx, toOrg);
+    if (current + 1 > cap) {
+      return { ok:false, msg:`Organizația destinație a atins capul de **${cap}** membri.` };
+    }
+  }
+
+  const cooldownExpiresAt = now() + transferCooldownMsForOrg(ctx, fromOrg);
+  repo.upsertCooldown(ctx.db, member.id, "ORG_SWITCH", cooldownExpiresAt, fromOrg.id, now());
+
+  if (ctx.settings.pkRole) {
+    const transferCooldownRoleAdded = await safeRoleAdd(member, ctx.settings.pkRole, `Transfer cooldown role for ${member.id}`);
+    if (!transferCooldownRoleAdded) {
+      console.error(`[TRANSFER] Failed to apply cooldown role for ${member.id} on request ${requestId}`);
+      return failApprove("apply_cooldown_role", "Nu pot aplica rolul de cooldown transfer (permisiuni lipsă).");
+    }
+  }
+
+  const roleIds = parseOrgRoleIds(fromOrg);
+  for (const rid of roleIds) {
+    if (member.roles.cache.has(rid)) {
+      const check = roleCheck(ctx, rid, "organizație");
+      if (!check.ok) return failApprove("remove_source_roles", check.msg || "Role check failed");
+      const removed = await safeRoleRemove(member, rid, `Transfer remove role ${rid} for ${member.id}`);
+      if (!removed) return failApprove("remove_source_roles", "Nu pot elimina rolurile organizației (permisiuni lipsă).", `Role: <@&${rid}>`);
+    }
+  }
+
+  repo.removeMembership(ctx.db, member.id);
+
+  repo.upsertLastOrgState(ctx.db, member.id, fromOrg.id, now(), `TRANSFER:${requestId}`);
+  repo.updateTransferRequestStatus(ctx.db, requestId, "APPROVED", {
+    approved_by: ctx.uid,
+    approved_at: now(),
+    cooldown_expires_at: cooldownExpiresAt
   });
+
+  await audit(ctx, "✅ Transfer aprobat", [
+    `**Transfer ID:** \`${requestId}\``,
+    `**Țintă:** <@${req.user_id}> (\`${req.user_id}\`)`,
+    `**Din:** **${fromOrg.name}**`,
+    `**Către:** **${toOrg.name}**`,
+    `**Cooldown:** ${Math.ceil((cooldownExpiresAt - now()) / (60 * 1000))} min (expiră ${formatRel(cooldownExpiresAt)})`,
+    `**De către:** <@${ctx.uid}>`
+  ].join("\n"), COLORS.SUCCESS);
+
+  return { ok:true };
 }
 
 async function requestTransfer(ctx, orgId, targetMemberId, toOrgId) {
@@ -1356,9 +1682,11 @@ export async function handleFmenuComponent(interaction, ctx) {
     if (action === "transfer_approve") return showModalSafe(interaction, transferDecisionModal(orgId, "approve"));
     if (action === "transfer_reject") return showModalSafe(interaction, transferDecisionModal(orgId, "reject"));
     if (action === "setrank") return showModalSafe(interaction, setRankModal(orgId));
-    if (action === "delegations") return delegationsView(interaction, ctx, orgId);
-    if (action === "delegate_add") return showModalSafe(interaction, delegateAddModal(orgId));
-    if (action === "delegate_remove") return showModalSafe(interaction, delegateRemoveModal(orgId));
+    if (action === "permissions" || action === "delegations") return setRankPermissionsView(interaction, ctx, orgId);
+    if (action === "permissions_refresh") return setRankPermissionsView(interaction, ctx, orgId);
+    if (action === "permissions_set") { const org = repo.getOrg(ctx.db, orgId); return showModalSafe(interaction, setRankPermissionsModal(orgId, org)); }
+    if (action === "permissions_wl_add" || action === "delegate_add") return showModalSafe(interaction, setRankWhitelistAddModal(orgId));
+    if (action === "permissions_wl_remove" || action === "delegate_remove") return showModalSafe(interaction, setRankWhitelistRemoveModal(orgId));
   }
 
   return sendEphemeral(interaction, "Eroare", "Acțiune necunoscută.");
@@ -1515,24 +1843,60 @@ export async function handleFmenuModal(interaction, ctx) {
     return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Rank setat", `User: <@${uid}> | Org: **${org?.name ?? orgId}** | Rank: **${prettyRank(rank)}**`)] });
   }
 
-  if (id.endsWith(":delegate_add_modal")) {
+  if (id.endsWith(":setrank_perms_modal")) {
     const orgId = Number(id.split(":")[1]);
-    const userRaw = interaction.fields.getTextInputValue("user")?.trim();
-    const canDemoteRaw = interaction.fields.getTextInputValue("can_demote")?.trim();
-    const uid = userRaw?.replace(/[<@!>]/g, "").trim();
-    if (!uid || !/^\d{15,25}$/.test(uid)) return sendEphemeral(interaction, "Eroare", "User invalid.");
     const org = repo.getOrg(ctx.db, orgId);
     if (!org) return sendEphemeral(interaction, "Eroare", "Organizația nu există.");
     const rank = getOrgRank(ctx.member, org);
     if (!ctx.perms.staff && rank !== "LEADER") return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar Leader sau staff.");
-    if (String(org.kind).toUpperCase() !== "LEGAL") return sendEphemeral(interaction, "Eroare", "Delegările sunt disponibile doar pentru org LEGAL.");
-    const canDemote = ["da", "yes", "y", "1", "true"].includes(String(canDemoteRaw || "").toLowerCase());
-    repo.upsertOrgDelegate(ctx.db, orgId, uid, { can_promote_coleader: true, can_demote_coleader: canDemote }, ctx.uid);
-    await audit(ctx, "🛂 Delegare adăugată", `**Org:** **${org.name}**\n**Delegat:** <@${uid}>\n**Permisiuni:** promote co-leader=DA, demote co-leader=${canDemote ? "DA" : "NU"}\n**De către:** <@${ctx.uid}>`, COLORS.GLOBAL);
-    return sendEphemeral(interaction, "Delegare salvată", `Delegat: <@${uid}>`);
+
+    const yn = (v) => ["da", "yes", "y", "1", "true", "on"].includes(String(v || "").trim().toLowerCase());
+    const allowCo = yn(interaction.fields.getTextInputValue("allow_co_setrank"));
+    const promoteMembers = yn(interaction.fields.getTextInputValue("co_promote_members"));
+    const demoteMembers = yn(interaction.fields.getTextInputValue("co_demote_members"));
+    const manageCo = yn(interaction.fields.getTextInputValue("co_manage_coleaders"));
+
+    repo.updateOrgEditable(ctx.db, orgId, {
+      allow_coleaders_set_rank: allowCo ? 1 : 0,
+      coleader_can_promote_members: promoteMembers ? 1 : 0,
+      coleader_can_demote_members: demoteMembers ? 1 : 0,
+      coleader_can_manage_coleaders: manageCo ? 1 : 0
+    });
+
+    await audit(ctx, "🛂 Permisiuni Set Rank actualizate", [
+      `**Org:** **${org.name}**`,
+      `allow_coleaders_set_rank: **${allowCo ? "DA" : "NU"}**`,
+      `coleader_can_promote_members: **${promoteMembers ? "DA" : "NU"}**`,
+      `coleader_can_demote_members: **${demoteMembers ? "DA" : "NU"}**`,
+      `coleader_can_manage_coleaders: **${manageCo ? "DA" : "NU"}**`,
+      `**De către:** <@${ctx.uid}>`
+    ].join("\n"), COLORS.GLOBAL);
+
+    return setRankPermissionsView(interaction, ctx, orgId);
   }
 
-  if (id.endsWith(":delegate_remove_modal")) {
+  if (id.endsWith(":setrank_whitelist_add_modal") || id.endsWith(":delegate_add_modal")) {
+    const orgId = Number(id.split(":")[1]);
+    const userRaw = interaction.fields.getTextInputValue("user")?.trim();
+    const promoteRaw = interaction.fields.getTextInputValue("can_promote")?.trim() ?? "DA";
+    const demoteRaw = interaction.fields.getTextInputValue("can_demote")?.trim() ?? "NU";
+    const uid = userRaw?.replace(/[<@!>]/g, "").trim();
+    if (!uid || !/^\d{15,25}$/.test(uid)) return sendEphemeral(interaction, "Eroare", "User invalid.");
+    const org = repo.getOrg(ctx.db, orgId);
+    if (!org) return sendEphemeral(interaction, "Eroare", "Organizația nu există.");
+    const rank = getOrgRank(ctx.member, org);
+    if (!ctx.perms.staff && rank !== "LEADER") return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar Leader sau staff.");
+    const yn = (v) => ["da", "yes", "y", "1", "true", "on"].includes(String(v || "").toLowerCase());
+    const canPromote = yn(promoteRaw);
+    const canDemote = yn(demoteRaw);
+
+    repo.upsertOrgDelegate(ctx.db, orgId, uid, { can_promote_coleader: canPromote, can_demote_coleader: canDemote }, ctx.uid);
+    syncSetRankWhitelistCache(ctx, orgId);
+    await audit(ctx, "🛂 Whitelist Set Rank: add", `**Org:** **${org.name}**\n**User:** <@${uid}>\n**can_promote_to_coleader:** ${canPromote ? "DA" : "NU"}\n**can_demote_from_coleader:** ${canDemote ? "DA" : "NU"}\n**De către:** <@${ctx.uid}>`, COLORS.GLOBAL);
+    return setRankPermissionsView(interaction, ctx, orgId);
+  }
+
+  if (id.endsWith(":setrank_whitelist_remove_modal") || id.endsWith(":delegate_remove_modal")) {
     const orgId = Number(id.split(":")[1]);
     const userRaw = interaction.fields.getTextInputValue("user")?.trim();
     const uid = userRaw?.replace(/[<@!>]/g, "").trim();
@@ -1541,9 +1905,11 @@ export async function handleFmenuModal(interaction, ctx) {
     if (!org) return sendEphemeral(interaction, "Eroare", "Organizația nu există.");
     const rank = getOrgRank(ctx.member, org);
     if (!ctx.perms.staff && rank !== "LEADER") return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar Leader sau staff.");
+
     repo.removeOrgDelegate(ctx.db, orgId, uid);
-    await audit(ctx, "🛂 Delegare revocată", `**Org:** **${org.name}**\n**Delegat:** <@${uid}>\n**De către:** <@${ctx.uid}>`, COLORS.GLOBAL);
-    return sendEphemeral(interaction, "Delegare ștearsă", `Delegat: <@${uid}>`);
+    syncSetRankWhitelistCache(ctx, orgId);
+    await audit(ctx, "🛂 Whitelist Set Rank: remove", `**Org:** **${org.name}**\n**User:** <@${uid}>\n**De către:** <@${ctx.uid}>`, COLORS.GLOBAL);
+    return setRankPermissionsView(interaction, ctx, orgId);
   }
 
   return sendEphemeral(interaction, "Eroare", "Modal necunoscut.");
