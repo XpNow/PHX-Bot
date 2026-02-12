@@ -1,7 +1,4 @@
-import {
-  EmbedBuilder,
-  MessageFlags
-} from "discord.js";
+import { MessageFlags } from "discord.js";
 import { openDb, ensureSchema, getSetting, setSetting, getGlobal, setGlobal } from "../../db/db.js";
 import { isOwner } from "../../util/access.js";
 import { makeEmbed, safeComponents } from "../../ui/ui.js";
@@ -12,7 +9,8 @@ import { applyBranding } from "../../ui/brand.js";
 export const PK_MS = 3 * 24 * 60 * 60 * 1000;
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const LEGAL_MIN_DAYS = 14;
-export const WARN_MAX = 3;
+export const ORG_SWITCH_MS = 3 * 60 * 60 * 1000;
+export const TRANSFER_MS = 60 * 60 * 1000;
 const guildFetchCache = new Map();
 const FULL_FETCH_CACHE_MS = 15 * 1000;
 
@@ -265,9 +263,23 @@ export function canManageTargetRank(ctx, org, targetMember) {
   return { ok: false, msg: "Nu ai permisiuni în această organizație." };
 }
 
-export function canSetRank(ctx, org, desiredRank, targetMember) {
+export function canSetRank(ctx, org, desiredRank, targetMember, opts = {}) {
+  const delegated = !!opts.delegated;
+  const canDemoteCoLeader = !!opts.canDemoteCoLeader;
+  const legalOrg = String(org?.kind || "").toUpperCase() === "LEGAL";
   if (!["LEADER", "COLEADER", "MEMBER"].includes(desiredRank)) {
     return { ok: false, msg: "Rank invalid (LEADER/COLEADER/MEMBER)." };
+  }
+  if (delegated) {
+    if (!legalOrg) return { ok: false, msg: "Delegările de rank sunt permise doar în organizații LEGAL." };
+    if (desiredRank === "LEADER") return { ok: false, msg: "Delegatul nu poate seta Leader." };
+    if (desiredRank === "MEMBER") {
+      const targetRank = getOrgRank(targetMember, org);
+      if ((targetRank === "COLEADER" || targetRank === "CO_LEADER") && !canDemoteCoLeader) {
+        return { ok: false, msg: "Delegarea nu permite demotarea Co-Leader." };
+      }
+      if (targetRank === "LEADER") return { ok: false, msg: "Delegatul nu poate retrograda Leader." };
+    }
   }
   if (desiredRank === "LEADER" && !ctx.perms.staff) {
     if (targetMember?.id === ctx.uid) {
@@ -280,12 +292,14 @@ export function canSetRank(ctx, org, desiredRank, targetMember) {
   }
   if (desiredRank === "COLEADER") {
     if (!org.co_leader_role_id) return { ok: false, msg: "Rolul de Co-Leader nu este setat pentru această organizație." };
+    if (delegated) return { ok: true };
     const actorRank = getOrgRank(ctx.member, org);
     if (!ctx.perms.staff && actorRank !== "LEADER") {
       return { ok: false, msg: "Doar liderul poate seta Co-Leader." };
     }
   }
   if (desiredRank === "MEMBER") {
+    if (delegated) return { ok: true };
     const targetRank = getOrgRank(targetMember, org);
     if (targetRank === "LEADER" && !ctx.perms.staff) {
       return { ok: false, msg: "Nu poți retrograda liderul organizației." };
