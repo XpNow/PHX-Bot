@@ -49,6 +49,13 @@ function fmtOpResult(res) {
   return `EȘEC (${res.reason || "UNKNOWN"})`;
 }
 
+function settingBool(db, key, def = false) {
+  const raw = String(getSetting(db, key) || "").trim().toLowerCase();
+  if (["1", "true", "yes", "y", "on"].includes(raw)) return true;
+  if (["0", "false", "no", "n", "off"].includes(raw)) return false;
+  return def;
+}
+
 export function diffMemberOrgsFromDiscord(member, orgs) {
   const hits = [];
   for (const org of orgs) {
@@ -142,8 +149,42 @@ export async function syncMemberOrgsDiscordToDb({ db, guild, member, audit }) {
 
   if (hits.length === 0) {
     const prev = repo.getMembership(db, member.id);
-    if (prev) repo.removeMembership(db, member.id);
-    return { ok: true, action: prev ? "DB_REMOVE" : "NOOP", prevOrgId: prev?.org_id ?? null };
+    if (!prev) return { ok: true, action: "NOOP", prevOrgId: null };
+
+    const acceptManual = settingBool(db, "accept_manual_org_role_changes", false);
+    if (acceptManual) {
+      repo.removeMembership(db, member.id);
+      await audit?.(
+        "🧭 Schimbare manuală rol org",
+        [
+          `**Țintă:** <@${member.id}> (\`${member.id}\`)`,
+          `**Rol schimbat:** role org lipsă în Discord`,
+          `**Decizie:** **ACCEPTED by policy**`,
+          `**Policy:** accept_manual_org_role_changes=true`,
+          `**Executor:** necunoscut`
+        ].join("\n")
+      );
+      return { ok: true, action: "DB_REMOVE", prevOrgId: prev.org_id };
+    }
+
+    const prevOrg = repo.getOrg(db, prev.org_id);
+    const prevRoleId = prevOrg?.member_role_id ? String(prevOrg.member_role_id) : null;
+    let res = null;
+    if (prevRoleId) {
+      res = await enqueueRoleOp({ member, roleId: prevRoleId, action: "add", context: "org:manual-remove:revert" });
+    }
+    await audit?.(
+      "🧭 Schimbare manuală rol org",
+      [
+        `**Țintă:** <@${member.id}> (\`${member.id}\`)`,
+        `**Rol:** ${prevRoleId ? `<@&${prevRoleId}>` : "—"}`,
+        `**Decizie:** **REVERTED by policy**`,
+        `**Policy:** accept_manual_org_role_changes=false`,
+        `**Executor:** necunoscut`,
+        `**Rezultat:** ${fmtOpResult(res)}`
+      ].join("\n")
+    );
+    return { ok: true, action: "REVERTED", prevOrgId: prev.org_id };
   }
 
   const org = hits[0];
@@ -156,18 +197,87 @@ export async function syncMemberOrgsDiscordToDb({ db, guild, member, audit }) {
     return { ok: true, action: "NOOP", orgId: org.id, role, prevOrgId: prev?.org_id ?? null };
   }
 
+  const acceptManual = settingBool(db, "accept_manual_org_role_changes", false);
+  const isManualAdd = !prev;
+  const isManualSwitch = !!(prev && String(prev.org_id) !== String(org.id));
+
+  if ((isManualAdd || isManualSwitch) && !acceptManual) {
+    const newRoleId = org?.member_role_id ? String(org.member_role_id) : null;
+    const prevOrg = prev ? repo.getOrg(db, prev.org_id) : null;
+    const prevRoleId = prevOrg?.member_role_id ? String(prevOrg.member_role_id) : null;
+
+    let removeRes = null;
+    let addRes = null;
+
+    if (newRoleId) {
+      removeRes = await enqueueRoleOp({ member, roleId: newRoleId, action: "remove", context: "org:manual-add-switch:revert:remove-new" });
+    }
+    if (isManualSwitch && prevRoleId) {
+      addRes = await enqueueRoleOp({ member, roleId: prevRoleId, action: "add", context: "org:manual-add-switch:revert:add-prev" });
+    }
+
+    const changeType = isManualAdd ? "ADD" : "SWITCH";
+    await audit?.(
+      "🧭 Schimbare manuală rol org",
+      [
+        `**Țintă:** <@${member.id}> (\`${member.id}\`)`,
+        `**Tip schimbare:** ${changeType}`,
+        `**Rol nou detectat:** ${newRoleId ? `<@&${newRoleId}>` : "—"}`,
+        `**Rol precedent:** ${prevRoleId ? `<@&${prevRoleId}>` : "—"}`,
+        `**Decizie:** **REVERTED by policy**`,
+        `**Policy:** accept_manual_org_role_changes=false`,
+        `**Executor:** necunoscut`,
+        `**Rezultat remove nou:** ${fmtOpResult(removeRes)}`,
+        ...(isManualSwitch ? [`**Rezultat add precedent:** ${fmtOpResult(addRes)}`] : [])
+      ].join("\n")
+    );
+
+    return { ok: true, action: "REVERTED", orgId: org.id, role, prevOrgId: prev?.org_id ?? null };
+  }
+
   repo.upsertMembership(db, member.id, org.id, role);
   return { ok: true, action: "UPSERT", orgId: org.id, role, prevOrgId: prev?.org_id ?? null };
 }
 
 export async function enforceCooldownsDbToDiscord({ db, guild, member, audit }) {
+  const acceptManualCooldown = settingBool(db, "accept_manual_cooldown_role_changes", false);
   const pkRole = getSetting(db, "pk_role_id");
   const banRole = getSetting(db, "ban_role_id");
   const now = Date.now();
+  const orgSwitch = repo.getCooldown(db, member.id, "ORG_SWITCH");
+  const orgSwitchActive = !!(orgSwitch && Number(orgSwitch.expires_at) > now);
+
+  if (orgSwitchActive && pkRole && !member.roles.cache.has(pkRole)) {
+    if (acceptManualCooldown) {
+      repo.clearCooldown(db, member.id, "ORG_SWITCH");
+      await audit?.("🧭 Schimbare manuală cooldown", `**Țintă:** <@${member.id}> (\`${member.id}\`)\n**Rol:** <@&${pkRole}>\n**Tip:** TRANSFER\n**Decizie:** **ACCEPTED by policy**\n**Policy:** accept_manual_cooldown_role_changes=true\n**Executor:** necunoscut`);
+      return { ok: true };
+    }
+    if (_canTouchCooldown(member.id, "ORG_SWITCH", "add")) {
+      const res = await enqueueRoleOp({ member, roleId: pkRole, action: "add", context: "cooldown:transfer:enforce" });
+      if (res?.ok) {
+        await audit?.(
+          "🔁 Cooldown sincronizat",
+          [
+            `**Țintă:** <@${member.id}> (\`${member.id}\`)`,
+            `**Tip:** **TRANSFER**`,
+            `**DB:** ✅ activ (expiră ${formatRel(orgSwitch.expires_at)})`,
+            `**Discord:** ❌ rol lipsea → ✅ rol adăugat`,
+            `**Rezultat:** ${fmtOpResult(res)}`
+          ].join("\n")
+        );
+      }
+    }
+  }
 
   const pk = repo.getCooldown(db, member.id, "PK");
   if (pk && pk.expires_at > now && pkRole) {
     if (!member.roles.cache.has(pkRole)) {
+      if (acceptManualCooldown) {
+        repo.clearCooldown(db, member.id, "PK");
+        await audit?.("🧭 Schimbare manuală cooldown", `**Țintă:** <@${member.id}> (\`${member.id}\`)\n**Rol:** <@&${pkRole}>\n**Tip:** PK\n**Decizie:** **ACCEPTED by policy**\n**Policy:** accept_manual_cooldown_role_changes=true\n**Executor:** necunoscut`);
+        return { ok: true };
+      }
       if (_canTouchCooldown(member.id, "PK", "add")) {
         const res = await enqueueRoleOp({ member, roleId: pkRole, action: "add", context: "cooldown:pk:enforce" });
         if (res?.ok) {
@@ -198,7 +308,7 @@ export async function enforceCooldownsDbToDiscord({ db, guild, member, audit }) 
     }
   } else {
     const pkExpired = !!(pk && Number(pk.expires_at) <= now);
-    if (pkRole && member.roles.cache.has(pkRole) && (!pk || pkExpired)) {
+    if (pkRole && member.roles.cache.has(pkRole) && (!pk || pkExpired) && !orgSwitchActive) {
       if (_canTouchCooldown(member.id, "PK", "remove")) {
         const res = await enqueueRoleOp({ member, roleId: pkRole, action: "remove", context: "cooldown:pk:cleanup" });
         if (res?.ok) {
@@ -223,6 +333,11 @@ export async function enforceCooldownsDbToDiscord({ db, guild, member, audit }) 
   const ban = repo.getCooldown(db, member.id, "BAN");
   if (ban && ban.expires_at > now && banRole) {
     if (!member.roles.cache.has(banRole)) {
+      if (acceptManualCooldown) {
+        repo.clearCooldown(db, member.id, "BAN");
+        await audit?.("🧭 Schimbare manuală cooldown", `**Țintă:** <@${member.id}> (\`${member.id}\`)\n**Rol:** <@&${banRole}>\n**Tip:** BAN\n**Decizie:** **ACCEPTED by policy**\n**Policy:** accept_manual_cooldown_role_changes=true\n**Executor:** necunoscut`);
+        return { ok: true };
+      }
       if (_canTouchCooldown(member.id, "BAN", "add")) {
         const res = await enqueueRoleOp({ member, roleId: banRole, action: "add", context: "cooldown:ban:enforce" });
         if (res?.ok) {
