@@ -689,7 +689,7 @@ function deleteOrgModal() {
   return modal("famenu:deleteorg_modal", "Delete organizatie", [
     input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
     input("apply_pk", "Apply PK? (DA/NU)", undefined, true, "DA"),
-    input("pk_scope", "Scope PK (all/members/coleaders/leaders/associated/none)", undefined, true, "all"),
+    input("pk_scope", "Scope PK (all/members/co/lead/assoc/none)", undefined, true, "all"),
     input("pk_days", "PK days override (gol=default)", undefined, false, "Ex: 7"),
     input("reason", "Motiv (opțional)", undefined, false, "Ex: desființare")
   ]);
