@@ -62,6 +62,17 @@ function parseOrgRoleIds(org) {
   ].filter(Boolean).map(String)));
 }
 
+function parseOrgMembershipRoleIds(org) {
+  const extras = String(org?.extra_role_ids || "")
+    .split(/[\s,]+/g)
+    .map(s => s.trim())
+    .filter(s => /^\d{5,25}$/.test(s));
+  return Array.from(new Set([
+    org?.member_role_id,
+    ...extras
+  ].filter(Boolean).map(String)));
+}
+
 function noCooldownExempt(org, membership, type) {
   if (!org || String(org.kind).toUpperCase() !== "LEGAL") return false;
   const threshold = Number(org.no_cooldown_after_days);
@@ -114,7 +125,7 @@ function resolveManageableOrgs(ctx) {
   const orgs = repo.listOrgs(ctx.db);
   const manageable = [];
   for (const o of orgs) {
-    const hasMemberRole = hasRole(ctx.member, o.member_role_id);
+    const hasMemberRole = parseOrgMembershipRoleIds(o).some(rid => hasRole(ctx.member, rid));
     const isLeader = hasRole(ctx.member, o.leader_role_id);
     const isCo = o.co_leader_role_id ? hasRole(ctx.member, o.co_leader_role_id) : false;
     if (hasMemberRole && (isLeader || isCo)) {
@@ -148,7 +159,7 @@ function resolveOrgForRmvSlash(ctx, targetMember) {
   let orgId = mem?.org_id ? Number(mem.org_id) : null;
 
   if (!orgId) {
-    const hits = orgs.filter(o => o?.member_role_id && hasRole(targetMember, o.member_role_id));
+    const hits = orgs.filter(o => parseOrgMembershipRoleIds(o).some(rid => hasRole(targetMember, rid)));
     if (hits.length === 1) orgId = hits[0].id;
     else if (hits.length > 1) {
       return {
@@ -196,7 +207,7 @@ async function fmenuHome(interaction, ctx) {
 
   if (manageable.length === 0) {
     const orgs = repo.listOrgs(ctx.db);
-    const hasMemberRole = orgs.some(o => hasRole(ctx.member, o.member_role_id));
+    const hasMemberRole = orgs.some(o => parseOrgMembershipRoleIds(o).some(rid => hasRole(ctx.member, rid)));
     if (hasMemberRole) {
       return sendEphemeral(
         interaction,
@@ -443,7 +454,7 @@ async function addToOrg(ctx, targetMember, orgId, role) {
 
   const orgs = repo.listOrgs(ctx.db);
   const otherOrgRoles = orgs
-    .filter(o => o.id !== org.id && o.member_role_id && targetMember.roles.cache.has(o.member_role_id))
+    .filter(o => o.id !== org.id && parseOrgMembershipRoleIds(o).some(rid => targetMember.roles.cache.has(rid)))
     .map(o => o.name);
   if (otherOrgRoles.length && !ctx.perms.staff) {
     return { ok:false, msg:`Userul are deja rol(uri) de organizație: ${otherOrgRoles.join(", ")}.` };
@@ -523,14 +534,20 @@ if (ctx.perms.staff) {
 
   const canManage = canManageTargetRank(ctx, org, targetMember);
   if (!canManage.ok) return { ok:false, msg: canManage.msg };
-  const orgRoleCheck = roleCheck(ctx, org.member_role_id, "membru");
-  if (!orgRoleCheck.ok) return { ok:false, msg: orgRoleCheck.msg };
-  if (!targetMember.roles.cache.has(org.member_role_id)) {
+  const membershipRoleIds = parseOrgMembershipRoleIds(org);
+  if (!membershipRoleIds.length) return { ok:false, msg:"Organizația nu are roluri de membership configurate." };
+  const hasAnyMembershipRole = membershipRoleIds.some(rid => targetMember.roles.cache.has(rid));
+  if (!hasAnyMembershipRole) {
     return { ok:false, msg:"Userul nu este membru în această organizație." };
   }
-  const removed = await safeRoleRemove(targetMember, org.member_role_id, `Remove org role for ${targetMember.id}`);
-  if (!removed) return { ok:false, msg:"Nu pot elimina rolul organizației (permisiuni lipsă)." };
-  const associatedRoleIds = parseOrgRoleIds(org).filter(rid => rid !== String(org.member_role_id));
+  for (const rid of membershipRoleIds) {
+    if (!targetMember.roles.cache.has(rid)) continue;
+    const chk = roleCheck(ctx, rid, "rol membership");
+    if (!chk.ok) return { ok:false, msg: chk.msg };
+    const rm = await safeRoleRemove(targetMember, rid, `Remove org membership role ${rid} for ${targetMember.id}`);
+    if (!rm) return { ok:false, msg:"Nu pot elimina unul din rolurile de membership ale organizației." };
+  }
+  const associatedRoleIds = parseOrgRoleIds(org).filter(rid => !membershipRoleIds.includes(String(rid)));
   for (const rid of associatedRoleIds) {
     if (!targetMember.roles.cache.has(rid)) continue;
     const chk = roleCheck(ctx, rid, "rol asociat");

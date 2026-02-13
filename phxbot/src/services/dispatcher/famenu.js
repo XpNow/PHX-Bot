@@ -472,7 +472,7 @@ async function famenuOrgs(interaction, ctx) {
     requireSupervisorOrOwner(ctx) ? btn("famenu:deleteorg", "Delete", ButtonStyle.Danger, "🗑️") : null,
     requireSupervisorOrOwner(ctx) ? btn("famenu:setorgcap", "Set cap", ButtonStyle.Secondary, "🔢") : null,
     requireSupervisorOrOwner(ctx) ? btn("famenu:editorg", "Edit org", ButtonStyle.Secondary, "🛠️") : null,
-    requireSupervisorOrOwner(ctx) ? btn("famenu:orgroles", "Org roles", ButtonStyle.Secondary, "🧩") : null,
+    requireSupervisorOrOwner(ctx) ? btn("famenu:orgroles", "Org Manager", ButtonStyle.Secondary, "🧩") : null,
     btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️")
   ];
   return sendEphemeral(interaction, emb.data.title, emb.data.description, rowsFromButtons(buttons.filter(Boolean)));
@@ -776,7 +776,7 @@ function orgRolesPickerView(ctx, page = 0) {
   const pages = Math.max(1, Math.ceil(orgs.length / 25));
   const p = Math.max(0, Math.min(page, pages - 1));
   const chunk = orgs.slice(p * 25, p * 25 + 25);
-  const emb = makeEmbed("Org roles manager", `Selectează organizația. Pagina **${p + 1}/${pages}**`);
+  const emb = makeEmbed("Org Manager", `Alege organizația. Pagina **${p + 1}/${pages}**`);
   const options = chunk.map(o => ({
     label: `${o.name}`.slice(0, 100),
     value: String(o.id),
@@ -790,7 +790,8 @@ function orgRolesPickerView(ctx, page = 0) {
   rows.push(...rowsFromButtons([
     btn(`famenu:orgroles:page:${Math.max(0, p - 1)}`, "Prev", ButtonStyle.Secondary, "◀️"),
     btn(`famenu:orgroles:page:${Math.min(pages - 1, p + 1)}`, "Next", ButtonStyle.Secondary, "▶️"),
-    btn("famenu:orgroles:search", "Search", ButtonStyle.Secondary, "🔎"),
+    btn("famenu:orgroles", "Selectează org", ButtonStyle.Secondary, "🏛️"),
+    btn("famenu:orgroles:search", "Caută org", ButtonStyle.Secondary, "🔎"),
     btn("famenu:orgs", "Back", ButtonStyle.Secondary, "⬅️")
   ]));
   return { emb, rows };

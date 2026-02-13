@@ -229,7 +229,14 @@ export function getOrgRank(member, org) {
   if (!member || !org) return "NONE";
   if (org.leader_role_id && member.roles.cache.has(org.leader_role_id)) return "LEADER";
   if (org.co_leader_role_id && member.roles.cache.has(org.co_leader_role_id)) return "COLEADER";
-  if (org.member_role_id && member.roles.cache.has(org.member_role_id)) return "MEMBER";
+  const membershipRoleIds = [
+    org.member_role_id,
+    ...String(org.extra_role_ids || "")
+      .split(/[\s,]+/g)
+      .map(x => x.replace(/[<@&#>]/g, "").trim())
+      .filter(x => /^\d{5,25}$/.test(x))
+  ].filter(Boolean).map(String);
+  if (membershipRoleIds.some(rid => member.roles.cache.has(rid))) return "MEMBER";
   return "NONE";
 }
 
