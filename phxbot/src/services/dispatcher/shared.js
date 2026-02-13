@@ -131,12 +131,12 @@ export async function sendEphemeral(interaction, title, desc, components = [], c
   const emb = makeEmbed(title, desc, color);
   const effectiveCtx = ctx || (interaction ? getCtx(interaction) : null);
   applyBranding(emb, effectiveCtx);
-  const payload = { embeds: [emb], components: safeComponents(components), flags: MessageFlags.Ephemeral };
-  if (interaction.deferred || interaction.replied) return interaction.editReply(payload);
+  const basePayload = { embeds: [emb], components: safeComponents(components) };
+  if (interaction.deferred || interaction.replied) return interaction.editReply(basePayload);
   if (interaction.isButton?.() || interaction.isStringSelectMenu?.()) {
-    return interaction.update(payload);
+    return interaction.update(basePayload);
   }
-  return interaction.reply(payload);
+  return interaction.reply({ ...basePayload, flags: MessageFlags.Ephemeral });
 }
 
 export function makeBrandedEmbed(ctx, title, desc, color) {
