@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { ButtonStyle, EmbedBuilder, MessageFlags } from "discord.js";
+import { ActionRowBuilder, ButtonStyle, EmbedBuilder, MessageFlags, RoleSelectMenuBuilder, StringSelectMenuBuilder } from "discord.js";
 
 import { getSetting, setSetting } from "../../db/db.js";
 import * as repo from "../../db/repo.js";
@@ -472,6 +472,7 @@ async function famenuOrgs(interaction, ctx) {
     requireSupervisorOrOwner(ctx) ? btn("famenu:deleteorg", "Delete", ButtonStyle.Danger, "🗑️") : null,
     requireSupervisorOrOwner(ctx) ? btn("famenu:setorgcap", "Set cap", ButtonStyle.Secondary, "🔢") : null,
     requireSupervisorOrOwner(ctx) ? btn("famenu:editorg", "Edit org", ButtonStyle.Secondary, "🛠️") : null,
+    requireSupervisorOrOwner(ctx) ? btn("famenu:orgroles", "Org roles", ButtonStyle.Secondary, "🧩") : null,
     btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️")
   ];
   return sendEphemeral(interaction, emb.data.title, emb.data.description, rowsFromButtons(buttons.filter(Boolean)));
@@ -730,6 +731,76 @@ function editOrgCooldownModal() {
     input("no_cd_after_days", "No cooldown after X days (0=off)", undefined, false, "0 / 60"),
     input("no_cd_types", "No cooldown types (PK/TRANSFER/BOTH)", undefined, false, "BOTH")
   ]);
+}
+
+function orgRolesSearchModal() {
+  return modal("famenu:orgroles_search_modal", "Caută organizație", [
+    input("query", "Nume parțial sau orgId", undefined, true, "Ex: ballas / 12")
+  ]);
+}
+
+function fmtRoleSummary(ctx, roleId) {
+  const rid = String(roleId || "").trim();
+  if (!rid) return "(missing)";
+  const role = ctx.guild.roles.cache.get(rid);
+  return role ? `<@&${rid}>` : `<@&${rid}> *(missing)*`;
+}
+
+function orgRolesSummaryEmbed(ctx, org) {
+  const extras = parseRoleIdsRaw(org?.extra_role_ids || "");
+  const extraTxt = extras.length
+    ? extras.map(rid => fmtRoleSummary(ctx, rid)).join("\n")
+    : "(none)";
+  return makeEmbed(`Org Roles Summary • ${org.name}`, [
+    `**Org ID:** \`${org.id}\``,
+    `• Leader role: ${fmtRoleSummary(ctx, org.leader_role_id)}`,
+    `• Co-Leader role: ${fmtRoleSummary(ctx, org.co_leader_role_id)}`,
+    `• Member base role: ${fmtRoleSummary(ctx, org.member_role_id)}`,
+    `• Extra roles (${extras.length}):`,
+    extraTxt
+  ].join("\n"));
+}
+
+function orgRolesSummaryRows(orgId, hasExtras = true) {
+  return rowsFromButtons([
+    btn(`famenu:orgroles:add:${orgId}`, "Add extra role", ButtonStyle.Success, "➕"),
+    hasExtras ? btn(`famenu:orgroles:remove:${orgId}`, "Remove extra role", ButtonStyle.Secondary, "➖") : null,
+    hasExtras ? btn(`famenu:orgroles:clear:${orgId}`, "Clear extra roles", ButtonStyle.Danger, "🧹") : null,
+    btn("famenu:orgroles", "Pick org", ButtonStyle.Secondary, "🏛️"),
+    btn("famenu:orgs", "Back orgs", ButtonStyle.Secondary, "⬅️")
+  ].filter(Boolean));
+}
+
+function orgRolesPickerView(ctx, page = 0) {
+  const orgs = repo.listOrgs(ctx.db);
+  const pages = Math.max(1, Math.ceil(orgs.length / 25));
+  const p = Math.max(0, Math.min(page, pages - 1));
+  const chunk = orgs.slice(p * 25, p * 25 + 25);
+  const emb = makeEmbed("Org roles manager", `Selectează organizația. Pagina **${p + 1}/${pages}**`);
+  const options = chunk.map(o => ({
+    label: `${o.name}`.slice(0, 100),
+    value: String(o.id),
+    description: `ID ${o.id} • ${humanKind(o.kind)}`.slice(0, 100)
+  }));
+  const rows = [];
+  if (options.length) {
+    const menu = new StringSelectMenuBuilder().setCustomId(`famenu:orgroles:pick:${p}`).setPlaceholder("Alege organizația").addOptions(options);
+    rows.push(new ActionRowBuilder().addComponents(menu));
+  }
+  rows.push(...rowsFromButtons([
+    btn(`famenu:orgroles:page:${Math.max(0, p - 1)}`, "Prev", ButtonStyle.Secondary, "◀️"),
+    btn(`famenu:orgroles:page:${Math.min(pages - 1, p + 1)}`, "Next", ButtonStyle.Secondary, "▶️"),
+    btn("famenu:orgroles:search", "Search", ButtonStyle.Secondary, "🔎"),
+    btn("famenu:orgs", "Back", ButtonStyle.Secondary, "⬅️")
+  ]));
+  return { emb, rows };
+}
+
+async function openOrgRolesSummary(interaction, ctx, orgId) {
+  const org = repo.getOrg(ctx.db, Number(orgId));
+  if (!org) return sendEphemeral(interaction, "Eroare", "Organizație inexistentă.");
+  const extras = parseRoleIdsRaw(org.extra_role_ids || "");
+  return sendEphemeral(interaction, `Org Roles • ${org.name}`, orgRolesSummaryEmbed(ctx, org).data.description, orgRolesSummaryRows(org.id, extras.length > 0));
 }
 function max0(n) { return n < 0 ? 0 : n; }
 
@@ -1010,6 +1081,48 @@ export async function handleFamenuCommand(interaction, ctx) {
 export async function handleFamenuComponent(interaction, ctx) {
   const id = interaction.customId;
 
+  if (interaction.isStringSelectMenu()) {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
+    if (id.startsWith("famenu:orgroles:pick:")) {
+      const orgId = Number(interaction.values?.[0] || 0);
+      return openOrgRolesSummary(interaction, ctx, orgId);
+    }
+    if (id.startsWith("famenu:orgroles:remove_select:")) {
+      const orgId = Number(id.split(":")[3] || 0);
+      const roleId = String(interaction.values?.[0] || "");
+      const org = repo.getOrg(ctx.db, orgId);
+      if (!org) return sendEphemeral(interaction, "Eroare", "Organizație inexistentă.");
+      const before = new Set(parseRoleIdsRaw(org.extra_role_ids || ""));
+      before.delete(roleId);
+      repo.updateOrgEditable(ctx.db, orgId, { extra_role_ids: Array.from(before).join(",") });
+      await audit(ctx, "🧩 Org extra roles • remove", `**Org:** **${org.name}** (\`${orgId}\`)
+**Rol scos:** <@&${roleId}>
+**De către:** <@${ctx.uid}>`, COLORS.GLOBAL);
+      return openOrgRolesSummary(interaction, ctx, orgId);
+    }
+    return;
+  }
+
+  if (interaction.isRoleSelectMenu()) {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
+    if (id.startsWith("famenu:orgroles:add_select:")) {
+      const orgId = Number(id.split(":")[3] || 0);
+      const roleId = String(interaction.values?.[0] || "");
+      const org = repo.getOrg(ctx.db, orgId);
+      if (!org) return sendEphemeral(interaction, "Eroare", "Organizație inexistentă.");
+      const chk = roleCheck(ctx, roleId, "extra");
+      if (!chk.ok) return sendEphemeral(interaction, "Eroare", chk.msg);
+      const before = new Set(parseRoleIdsRaw(org.extra_role_ids || ""));
+      before.add(roleId);
+      repo.updateOrgEditable(ctx.db, orgId, { extra_role_ids: Array.from(before).join(",") });
+      await audit(ctx, "🧩 Org extra roles • add", `**Org:** **${org.name}** (\`${orgId}\`)
+**Rol adăugat:** <@&${roleId}>
+**De către:** <@${ctx.uid}>`, COLORS.GLOBAL);
+      return openOrgRolesSummary(interaction, ctx, orgId);
+    }
+    return;
+  }
+
   if (!interaction.isButton()) return;
 
   if (id === "famenu:back") return famenuHome(interaction, ctx);
@@ -1052,6 +1165,67 @@ export async function handleFamenuComponent(interaction, ctx) {
     if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
     return showModalSafe(interaction, setOrgCapModal());
   }
+  if (id === "famenu:orgroles") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
+    const view = orgRolesPickerView(ctx, 0);
+    return sendEphemeral(interaction, view.emb.data.title, view.emb.data.description, view.rows);
+  }
+  if (id.startsWith("famenu:orgroles:page:")) {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
+    const page = Number(id.split(":")[3] || 0);
+    const view = orgRolesPickerView(ctx, page);
+    return sendEphemeral(interaction, view.emb.data.title, view.emb.data.description, view.rows);
+  }
+  if (id === "famenu:orgroles:search") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
+    return showModalSafe(interaction, orgRolesSearchModal());
+  }
+  if (id.startsWith("famenu:orgroles:add:")) {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
+    const orgId = Number(id.split(":")[3] || 0);
+    const sel = new RoleSelectMenuBuilder().setCustomId(`famenu:orgroles:add_select:${orgId}`).setPlaceholder("Alege rol extra").setMinValues(1).setMaxValues(1);
+    const rows = [new ActionRowBuilder().addComponents(sel), ...rowsFromButtons([btn(`famenu:orgroles:open:${orgId}`, "Cancel", ButtonStyle.Secondary, "⬅️")])];
+    return sendEphemeral(interaction, "Add extra role", "Selectează rolul de adăugat în extra_role_ids.", rows);
+  }
+  if (id.startsWith("famenu:orgroles:remove:")) {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
+    const orgId = Number(id.split(":")[3] || 0);
+    const org = repo.getOrg(ctx.db, orgId);
+    if (!org) return sendEphemeral(interaction, "Eroare", "Organizație inexistentă.");
+    const extras = parseRoleIdsRaw(org.extra_role_ids || "");
+    if (!extras.length) return sendEphemeral(interaction, "Info", "Nu există extra roles setate.");
+    const options = extras.slice(0,25).map(rid => ({ label: (ctx.guild.roles.cache.get(rid)?.name || `missing:${rid}`).slice(0,100), value: rid, description: rid.slice(0,100) }));
+    const menu = new StringSelectMenuBuilder().setCustomId(`famenu:orgroles:remove_select:${orgId}`).setPlaceholder("Alege rolul de scos").addOptions(options);
+    const rows = [new ActionRowBuilder().addComponents(menu), ...rowsFromButtons([btn(`famenu:orgroles:open:${orgId}`, "Cancel", ButtonStyle.Secondary, "⬅️")])];
+    return sendEphemeral(interaction, "Remove extra role", "Selectează rolul care va fi scos.", rows);
+  }
+  if (id.startsWith("famenu:orgroles:clear:")) {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
+    const orgId = Number(id.split(":")[3] || 0);
+    const rows = rowsFromButtons([
+      btn(`famenu:orgroles:clear_yes:${orgId}`, "Confirm clear", ButtonStyle.Danger, "✅"),
+      btn(`famenu:orgroles:open:${orgId}`, "Cancel", ButtonStyle.Secondary, "⬅️")
+    ]);
+    return sendEphemeral(interaction, "Confirmare", "Sigur vrei să golești toate extra roles pentru org?", rows);
+  }
+  if (id.startsWith("famenu:orgroles:clear_yes:")) {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
+    const orgId = Number(id.split(":")[4] || 0);
+    const org = repo.getOrg(ctx.db, orgId);
+    if (!org) return sendEphemeral(interaction, "Eroare", "Organizație inexistentă.");
+    const before = parseRoleIdsRaw(org.extra_role_ids || "");
+    repo.updateOrgEditable(ctx.db, orgId, { extra_role_ids: "" });
+    await audit(ctx, "🧩 Org extra roles • clear", `**Org:** **${org.name}** (\`${orgId}\`)
+**Roluri scoase:** ${before.map(x=>`<@&${x}>`).join(", ") || "—"}
+**De către:** <@${ctx.uid}>`, COLORS.GLOBAL);
+    return openOrgRolesSummary(interaction, ctx, orgId);
+  }
+  if (id.startsWith("famenu:orgroles:open:")) {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
+    const orgId = Number(id.split(":")[3] || 0);
+    return openOrgRolesSummary(interaction, ctx, orgId);
+  }
+
   if (id === "famenu:editorg") {
     if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
     const emb = makeEmbed("Edit organizație", "Alege ce vrei să editezi.");
@@ -1277,6 +1451,27 @@ export async function handleFamenuComponent(interaction, ctx) {
 
 export async function handleFamenuModal(interaction, ctx) {
   const id = interaction.customId;
+
+  if (id === "famenu:orgroles_search_modal") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
+    const q = String(interaction.fields.getTextInputValue("query") || "").trim();
+    const orgs = repo.listOrgs(ctx.db);
+    const byId = Number(q);
+    let hits = [];
+    if (Number.isFinite(byId) && byId > 0) {
+      const org = repo.getOrg(ctx.db, byId);
+      if (org) hits = [org];
+    } else {
+      const low = q.toLowerCase();
+      hits = orgs.filter(o => String(o.name || "").toLowerCase().includes(low));
+    }
+    if (!hits.length) return sendEphemeral(interaction, "Search org", "Nu am găsit organizații pentru query-ul dat.");
+
+    const options = hits.slice(0,25).map(o => ({ label: `${o.name}`.slice(0,100), value: String(o.id), description: `ID ${o.id} • ${humanKind(o.kind)}`.slice(0,100) }));
+    const menu = new StringSelectMenuBuilder().setCustomId("famenu:orgroles:pick:0").setPlaceholder("Selectează organizația").addOptions(options);
+    const rows = [new ActionRowBuilder().addComponents(menu), ...rowsFromButtons([btn("famenu:orgroles", "Back", ButtonStyle.Secondary, "⬅️")])];
+    return sendEphemeral(interaction, `Search rezultate (${hits.length})`, "Alege organizația dorită.", rows);
+  }
 
   if (id === "famenu:createorg") {
     if (!requireCreateOrg(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Nu ai permisiuni să creezi organizații.");
