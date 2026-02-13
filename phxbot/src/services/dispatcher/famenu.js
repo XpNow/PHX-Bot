@@ -102,7 +102,6 @@ function parseRoleIdsRaw(raw) {
     .split(/[\s,]+/g)
     .map(s => s.replace(/[<@&#>]/g, "").trim())
     .filter(Boolean);
-  // de-dup + keep order
   const out = [];
   for (const id of ids) {
     if (!/^\d{5,25}$/.test(id)) continue;
@@ -434,7 +433,7 @@ async function famenuConfig(interaction, ctx) {
   if (!requireConfigManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar owner sau rolul de config poate modifica configurările.");
   const issues = configIssues(ctx);
   const desc = [
-    "Setează roluri si canale.",
+    "Faction Manager configuration.",
     issues.length ? `\n⚠️ Probleme detectate:\n- ${issues.join("\n- ")}` : "\n✅ Configurarea pare completă."
   ].join("\n");
   const emb = makeEmbed("Config", desc);
@@ -1522,10 +1521,8 @@ export async function handleFamenuModal(interaction, ctx) {
     const raw = String(interaction.fields.getTextInputValue("role_id") || "").trim();
     const ids = parseRoleIdsRaw(raw);
 
-    // admin/supervisor/config pot avea multiple roluri; pk/ban doar 1
     const multiAllowed = (which === "admin" || which === "supervisor" || which === "config");
     if (!ids.length) {
-      // allow clearing
       setSetting(ctx.db, `${which}_role_id`, "");
       const map = { admin: "adminRole", supervisor: "supervisorRole", config: "configRole", pk: "pkRole", ban: "banRole" };
       const k = map[which];
@@ -1540,7 +1537,6 @@ export async function handleFamenuModal(interaction, ctx) {
       return sendEphemeral(interaction, "Eroare", "Pentru acest set accept doar UN singur rol.");
     }
 
-    // validate roles exist
     for (const rid of ids) {
       const chk = roleCheck(ctx, rid, "rol");
       if (!chk.ok) return sendEphemeral(interaction, "Eroare", `Role ID invalid: \`${rid}\``);
