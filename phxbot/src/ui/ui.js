@@ -55,14 +55,20 @@ export function select(id, placeholder, options) {
 }
 
 export function modal(id, title, inputs) {
-  const m = new ModalBuilder().setCustomId(id).setTitle(title);
-  const rows = inputs.map(inp => new ActionRowBuilder().addComponents(inp));
+  const safeId = String(id || "modal").slice(0, 100);
+  const safeTitle = String(title || "Form").slice(0, 45);
+  const m = new ModalBuilder().setCustomId(safeId).setTitle(safeTitle);
+  const rows = (Array.isArray(inputs) ? inputs : [])
+    .slice(0, 5)
+    .map(inp => new ActionRowBuilder().addComponents(inp));
   m.addComponents(rows);
   return m;
 }
 
 export function input(id, label, style=TextInputStyle.Short, required=true, placeholder="") {
-  const i = new TextInputBuilder().setCustomId(id).setLabel(label).setStyle(style).setRequired(required);
-  if (placeholder) i.setPlaceholder(placeholder);
+  const safeId = String(id || "field").slice(0, 100);
+  const safeLabel = String(label || "Field").slice(0, 45);
+  const i = new TextInputBuilder().setCustomId(safeId).setLabel(safeLabel).setStyle(style).setRequired(required);
+  if (placeholder) i.setPlaceholder(String(placeholder).slice(0, 100));
   return i;
 }
