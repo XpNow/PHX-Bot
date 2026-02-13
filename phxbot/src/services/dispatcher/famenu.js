@@ -55,6 +55,10 @@ function parseIntInput(raw, label, { min = null, max = null } = {}) {
   return { ok: true, value: n };
 }
 
+function canManageOrgManager(ctx) {
+  return requireSupervisorOrOwner(ctx) || requireConfigManager(ctx);
+}
+
 function parseSetDirective(raw) {
   const v = String(raw ?? "").trim();
   if (!v) return { mode: "keep" };
@@ -108,6 +112,11 @@ function parseRoleIdsRaw(raw) {
     if (!out.includes(id)) out.push(id);
   }
   return out;
+}
+
+
+function parseOrgMembershipRoleIds(org) {
+  return parseRoleIdsRaw([org?.member_role_id, org?.extra_role_ids || ""].join(","));
 }
 
 function fmtRoleIds(rawOrIds) {
@@ -457,7 +466,8 @@ async function famenuOrgs(interaction, ctx) {
   const orgs = repo.listOrgs(ctx.db);
   const desc = orgs.length
     ? orgs.map(o => {
-        const count = o.member_role_id ? (ctx.guild.roles.cache.get(o.member_role_id)?.members.size ?? 0) : 0;
+        const membershipRoleIds = parseOrgMembershipRoleIds(o);
+        const count = membershipRoleIds.length ? new Set(membershipRoleIds.flatMap(rid => Array.from(ctx.guild.roles.cache.get(rid)?.members.keys() || []))).size : 0;
         const cap =
           String(o.kind).toUpperCase() === "ILLEGAL"
             ? (Number.isFinite(Number(o.member_cap)) ? ` | Cap: **${Number(o.member_cap)}**` : " | Cap: **30** (default)")
@@ -472,7 +482,7 @@ async function famenuOrgs(interaction, ctx) {
     requireSupervisorOrOwner(ctx) ? btn("famenu:deleteorg", "Delete", ButtonStyle.Danger, "🗑️") : null,
     requireSupervisorOrOwner(ctx) ? btn("famenu:setorgcap", "Set cap", ButtonStyle.Secondary, "🔢") : null,
     requireSupervisorOrOwner(ctx) ? btn("famenu:editorg", "Edit org", ButtonStyle.Secondary, "🛠️") : null,
-    requireSupervisorOrOwner(ctx) ? btn("famenu:orgroles", "Org Manager", ButtonStyle.Secondary, "🧩") : null,
+    canManageOrgManager(ctx) ? btn("famenu:orgroles", "Org Manager", ButtonStyle.Secondary, "🧩") : null,
     btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️")
   ];
   return sendEphemeral(interaction, emb.data.title, emb.data.description, rowsFromButtons(buttons.filter(Boolean)));
@@ -867,7 +877,8 @@ async function reconcileOrg(ctx, orgId, members, opts = {}) {
   if (!members) return { ok:false, msg:"Nu pot prelua membrii guild-ului." };
 
   const orgs = repo.listOrgs(ctx.db);
-  const discordMembers = members.filter(m => m.roles.cache.has(org.member_role_id));
+  const membershipRoleIds = parseOrgMembershipRoleIds(org);
+  const discordMembers = members.filter(m => membershipRoleIds.some(rid => m.roles.cache.has(rid)));
   const discordIds = new Set(discordMembers.map(m => m.id));
   const dbMembers = repo.listMembersByOrg(ctx.db, orgId);
   const dbIds = new Set(dbMembers.map(m => m.user_id));
@@ -907,7 +918,7 @@ async function reconcileOrg(ctx, orgId, members, opts = {}) {
       added++;
     }
     const otherOrgs = orgs
-      .filter(o => o.id !== org.id && o.member_role_id && m.roles.cache.has(o.member_role_id))
+      .filter(o => o.id !== org.id && parseOrgMembershipRoleIds(o).some(rid => m.roles.cache.has(rid)))
       .map(o => o.name);
     if (otherOrgs.length) {
       multiOrg.push(`<@${m.id}> → ${otherOrgs.join(", ")}`);
@@ -1083,7 +1094,7 @@ export async function handleFamenuComponent(interaction, ctx) {
   const id = interaction.customId;
 
   if (interaction.isStringSelectMenu()) {
-    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
+    if (!canManageOrgManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner/config.");
     if (id.startsWith("famenu:orgroles:pick:")) {
       const orgId = Number(interaction.values?.[0] || 0);
       return openOrgRolesSummary(interaction, ctx, orgId);
@@ -1105,7 +1116,7 @@ export async function handleFamenuComponent(interaction, ctx) {
   }
 
   if (interaction.isRoleSelectMenu()) {
-    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
+    if (!canManageOrgManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner/config.");
     if (id.startsWith("famenu:orgroles:add_select:")) {
       const orgId = Number(id.split(":")[3] || 0);
       const roleId = String(interaction.values?.[0] || "");
@@ -1167,29 +1178,29 @@ export async function handleFamenuComponent(interaction, ctx) {
     return showModalSafe(interaction, setOrgCapModal());
   }
   if (id === "famenu:orgroles") {
-    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
+    if (!canManageOrgManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner/config.");
     const view = orgRolesPickerView(ctx, 0);
     return sendEphemeral(interaction, view.emb.data.title, view.emb.data.description, view.rows);
   }
   if (id.startsWith("famenu:orgroles:page:")) {
-    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
+    if (!canManageOrgManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner/config.");
     const page = Number(id.split(":")[3] || 0);
     const view = orgRolesPickerView(ctx, page);
     return sendEphemeral(interaction, view.emb.data.title, view.emb.data.description, view.rows);
   }
   if (id === "famenu:orgroles:search") {
-    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
+    if (!canManageOrgManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner/config.");
     return showModalSafe(interaction, orgRolesSearchModal());
   }
   if (id.startsWith("famenu:orgroles:add:")) {
-    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
+    if (!canManageOrgManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner/config.");
     const orgId = Number(id.split(":")[3] || 0);
     const sel = new RoleSelectMenuBuilder().setCustomId(`famenu:orgroles:add_select:${orgId}`).setPlaceholder("Alege rol extra").setMinValues(1).setMaxValues(1);
     const rows = [new ActionRowBuilder().addComponents(sel), ...rowsFromButtons([btn(`famenu:orgroles:open:${orgId}`, "Cancel", ButtonStyle.Secondary, "⬅️")])];
     return sendEphemeral(interaction, "Add extra role", "Selectează rolul de adăugat în extra_role_ids.", rows);
   }
   if (id.startsWith("famenu:orgroles:remove:")) {
-    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
+    if (!canManageOrgManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner/config.");
     const orgId = Number(id.split(":")[3] || 0);
     const org = repo.getOrg(ctx.db, orgId);
     if (!org) return sendEphemeral(interaction, "Eroare", "Organizație inexistentă.");
@@ -1201,7 +1212,7 @@ export async function handleFamenuComponent(interaction, ctx) {
     return sendEphemeral(interaction, "Remove extra role", "Selectează rolul care va fi scos.", rows);
   }
   if (id.startsWith("famenu:orgroles:clear:")) {
-    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
+    if (!canManageOrgManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner/config.");
     const orgId = Number(id.split(":")[3] || 0);
     const rows = rowsFromButtons([
       btn(`famenu:orgroles:clear_yes:${orgId}`, "Confirm clear", ButtonStyle.Danger, "✅"),
@@ -1210,7 +1221,7 @@ export async function handleFamenuComponent(interaction, ctx) {
     return sendEphemeral(interaction, "Confirmare", "Sigur vrei să golești toate extra roles pentru org?", rows);
   }
   if (id.startsWith("famenu:orgroles:clear_yes:")) {
-    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
+    if (!canManageOrgManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner/config.");
     const orgId = Number(id.split(":")[4] || 0);
     const org = repo.getOrg(ctx.db, orgId);
     if (!org) return sendEphemeral(interaction, "Eroare", "Organizație inexistentă.");
@@ -1222,7 +1233,7 @@ export async function handleFamenuComponent(interaction, ctx) {
     return openOrgRolesSummary(interaction, ctx, orgId);
   }
   if (id.startsWith("famenu:orgroles:open:")) {
-    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
+    if (!canManageOrgManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner/config.");
     const orgId = Number(id.split(":")[3] || 0);
     return openOrgRolesSummary(interaction, ctx, orgId);
   }
@@ -1454,7 +1465,7 @@ export async function handleFamenuModal(interaction, ctx) {
   const id = interaction.customId;
 
   if (id === "famenu:orgroles_search_modal") {
-    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
+    if (!canManageOrgManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner/config.");
     const q = String(interaction.fields.getTextInputValue("query") || "").trim();
     const orgs = repo.listOrgs(ctx.db);
     const byId = Number(q);
@@ -1823,14 +1834,19 @@ export async function handleFamenuModal(interaction, ctx) {
     const reason = interaction.fields.getTextInputValue("reason")?.trim();
 
     const applyPk = ["da", "yes", "y", "1", "true"].includes(String(applyPkRaw || "").toLowerCase());
-    const pkScopeSet = new Set(
-      (pkScopeRaw === "all" ? ["members", "coleaders", "leaders", "associated"]
+    const scopeTokens = (pkScopeRaw === "all" ? ["members", "coleaders", "leaders", "associated"]
       : pkScopeRaw === "none" ? []
-      : pkScopeRaw.split(/[\s,]+/g).filter(Boolean))
-    );
+      : pkScopeRaw.split(/[\s,]+/g).filter(Boolean));
+    const alias = {
+      m: "members", member: "members", members: "members", base: "members",
+      c: "coleaders", co: "coleaders", coleader: "coleaders", coleaders: "coleaders",
+      l: "leaders", lead: "leaders", leader: "leaders", leaders: "leaders",
+      a: "associated", assoc: "associated", associated: "associated", extras: "associated", extra: "associated"
+    };
+    const pkScopeSet = new Set(scopeTokens.map(t => alias[String(t).toLowerCase()] || String(t).toLowerCase()));
     const validScopes = ["members", "coleaders", "leaders", "associated"];
     if ([...pkScopeSet].some(s => !validScopes.includes(s))) {
-      return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Eroare", "pk_scope invalid. Folosește all/none sau members,coleaders,leaders,associated.")] });
+      return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Eroare", "pk_scope invalid. Folosește all/none sau members|co|lead|assoc.")] });
     }
     let pkDaysOverride = null;
     if (pkDaysRaw) {
@@ -1874,17 +1890,13 @@ export async function handleFamenuModal(interaction, ctx) {
     let roleIssues = 0;
 
     for (const m of orgMembers.values()) {
-      const hasBase = !!(org.member_role_id && m.roles.cache.has(org.member_role_id));
       const hasLeader = !!(org.leader_role_id && m.roles.cache.has(org.leader_role_id));
       const hasCo = !!(org.co_leader_role_id && m.roles.cache.has(org.co_leader_role_id));
+      const hasBase = !!(org.member_role_id && m.roles.cache.has(org.member_role_id));
       const extraIds = parseRoleIdsRaw(org.extra_role_ids || "");
       const hasAssoc = extraIds.some(rid => m.roles.cache.has(rid));
-      const shouldPk = applyPk && (
-        (pkScopeSet.has("members") && hasBase) ||
-        (pkScopeSet.has("leaders") && hasLeader) ||
-        (pkScopeSet.has("coleaders") && hasCo) ||
-        (pkScopeSet.has("associated") && hasAssoc)
-      );
+      const bucket = hasLeader ? "leaders" : hasCo ? "coleaders" : hasBase ? "members" : hasAssoc ? "associated" : null;
+      const shouldPk = applyPk && !!(bucket && pkScopeSet.has(bucket));
 
       const res = await forcePkAndRemoveOrgRoles(ctx, m, org, orgId, ctx.uid, {
         applyPk: shouldPk,

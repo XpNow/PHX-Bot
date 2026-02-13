@@ -49,6 +49,14 @@ function fmtOpResult(res) {
   return `EȘEC (${res.reason || "UNKNOWN"})`;
 }
 
+function orgMembershipRoleIds(org) {
+  const extras = String(org?.extra_role_ids || "")
+    .split(/[\s,]+/g)
+    .map(x => x.trim())
+    .filter(x => /^\d{5,25}$/.test(x));
+  return Array.from(new Set([org?.member_role_id, ...extras].filter(Boolean).map(String)));
+}
+
 function settingBool(db, key, def = false) {
   const raw = String(getSetting(db, key) || "").trim().toLowerCase();
   if (["1", "true", "yes", "y", "on"].includes(raw)) return true;
@@ -59,8 +67,9 @@ function settingBool(db, key, def = false) {
 export function diffMemberOrgsFromDiscord(member, orgs) {
   const hits = [];
   for (const org of orgs) {
-    if (!org?.member_role_id) continue;
-    if (!member.roles.cache.has(org.member_role_id)) continue;
+    const roleIds = orgMembershipRoleIds(org);
+    if (!roleIds.length) continue;
+    if (!roleIds.some(rid => member.roles.cache.has(rid))) continue;
     hits.push(org);
   }
   return hits;
@@ -106,8 +115,8 @@ export async function syncMemberOrgsDiscordToDb({ db, guild, member, audit }) {
 
   const leadershipConflicts = [];
   for (const org of orgs) {
-    if (!org?.member_role_id) continue;
-    const hasMain = member.roles.cache.has(org.member_role_id);
+    const roleIds = orgMembershipRoleIds(org);
+    const hasMain = roleIds.some(rid => member.roles.cache.has(rid));
     if (hasMain) continue;
 
     const leadRid = org.leader_role_id ? String(org.leader_role_id) : null;

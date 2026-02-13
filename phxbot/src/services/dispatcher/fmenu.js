@@ -116,8 +116,14 @@ function effectiveIllegalCap(org) {
 
 function countOrgMembers(ctx, org) {
   const dbCount = repo.listMembersByOrg(ctx.db, org.id).length;
-  const memberRole = org.member_role_id ? ctx.guild.roles.cache.get(org.member_role_id) : null;
-  const discordCount = memberRole ? memberRole.members.filter(m => !m.user?.bot).size : 0;
+  const membershipRoleIds = parseOrgMembershipRoleIds(org);
+  const discordIds = new Set();
+  for (const rid of membershipRoleIds) {
+    const role = ctx.guild.roles.cache.get(rid);
+    if (!role) continue;
+    for (const m of role.members.values()) if (!m.user?.bot) discordIds.add(m.id);
+  }
+  const discordCount = discordIds.size;
   return Math.max(dbCount, discordCount);
 }
 
@@ -920,7 +926,7 @@ function resolveOrgByInput(ctx, input) {
   const orgs = repo.listOrgs(ctx.db);
 
   if (/^\d{5,25}$/.test(roleId)) {
-    const byRole = orgs.find(o => String(o.member_role_id) === String(roleId));
+    const byRole = orgs.find(o => parseOrgMembershipRoleIds(o).includes(String(roleId)));
     if (byRole) return { ok: true, org: byRole };
     const byId = orgs.find(o => String(o.id) === String(roleId));
     if (byId) return { ok: true, org: byId };
@@ -1046,8 +1052,9 @@ async function rosterView(interaction, ctx, orgId, useEditReply = false, page = 
           : sendEphemeral(interaction, emb.data.title, emb.data.description));
   }
 
-  if (!org.member_role_id) {
-    const emb = makeEmbed("Eroare", "Organizația nu are setat rolul de membru.");
+  const membershipRoleIds = parseOrgMembershipRoleIds(org);
+  if (!membershipRoleIds.length) {
+    const emb = makeEmbed("Eroare", "Organizația nu are roluri de membership setate.");
     return useUpdate
       ? interaction.update({ embeds: [emb], components: [] })
       : (useEditReply
@@ -1055,9 +1062,11 @@ async function rosterView(interaction, ctx, orgId, useEditReply = false, page = 
           : sendEphemeral(interaction, emb.data.title, emb.data.description));
   }
 
-  const memberRole = ctx.guild.roles.cache.get(org.member_role_id);
-  if (!memberRole) {
-    const emb = makeEmbed("Eroare", "Rolul de membru nu există pe server.");
+  const existingMembershipRoles = membershipRoleIds
+    .map(rid => ctx.guild.roles.cache.get(rid))
+    .filter(Boolean);
+  if (!existingMembershipRoles.length) {
+    const emb = makeEmbed("Eroare", "Niciun rol de membership nu există pe server.");
     return useUpdate
       ? interaction.update({ embeds: [emb], components: [] })
       : (useEditReply
