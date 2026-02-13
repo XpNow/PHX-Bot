@@ -23,14 +23,24 @@ export function makeEmbed(title, desc, color = COLORS.GLOBAL) {
 export function rowsFromButtons(buttons, maxPerRow=5) {
   const rows = [];
   let current = [];
+  const seenCustomIds = new Set();
+
   for (const b of buttons) {
     if (!b) continue;
+
+    const customId = b?.data?.custom_id || b?.toJSON?.()?.custom_id || null;
+    if (customId) {
+      if (seenCustomIds.has(customId)) continue;
+      seenCustomIds.add(customId);
+    }
+
     current.push(b);
     if (current.length === maxPerRow) {
       rows.push(new ActionRowBuilder().addComponents(current));
       current = [];
     }
   }
+
   if (current.length) rows.push(new ActionRowBuilder().addComponents(current));
   return rows;
 }
@@ -44,8 +54,8 @@ export function safeComponents(rows) {
   }).slice(0,5);
 }
 
-export function btn(id, label, style=ButtonStyle.Secondary, emoji=null) {
-  const b = new ButtonBuilder().setCustomId(id).setLabel(label).setStyle(style);
+export function btn(id, label, style=ButtonStyle.Secondary, emoji=null, disabled=false) {
+  const b = new ButtonBuilder().setCustomId(id).setLabel(label).setStyle(style).setDisabled(!!disabled);
   if (emoji) b.setEmoji(emoji);
   return b;
 }

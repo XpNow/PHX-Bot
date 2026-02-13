@@ -1155,7 +1155,14 @@ async function rosterView(interaction, ctx, orgId, useEditReply = false, page = 
   const coLeaderRole = org.co_leader_role_id ? ctx.guild.roles.cache.get(org.co_leader_role_id) : null;
 
   const dbMembers = repo.listMembersByOrg(ctx.db, orgId);
-  const discordMembersWithOrgRole = memberRole.members;
+  const discordMembersWithOrgRole = new Map();
+  for (const rid of membershipRoleIds) {
+    const role = ctx.guild.roles.cache.get(rid);
+    if (!role) continue;
+    for (const [uid, m] of role.members) {
+      if (!discordMembersWithOrgRole.has(uid)) discordMembersWithOrgRole.set(uid, m);
+    }
+  }
 
   const entries = [];
   let missingOrgRole = 0;
