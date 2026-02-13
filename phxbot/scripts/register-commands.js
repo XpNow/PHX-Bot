@@ -3,7 +3,7 @@ import path from "path";
 
 dotenv.config({ path: path.join(process.cwd(), ".env") });
 
-import { REST, Routes, SlashCommandBuilder, PermissionFlagsBits } from "discord.js";
+import { REST, Routes, SlashCommandBuilder } from "discord.js";
 
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.DISCORD_CLIENT_ID;
@@ -42,7 +42,6 @@ const cmdFmenu = new SlashCommandBuilder()
 const cmdFamenu = new SlashCommandBuilder()
   .setName("famenu")
   .setDescription("Meniu administrare.")
-  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
   .setDMPermission(false);
 
 const cmdAdd = addMultiUserOptions(
@@ -72,7 +71,12 @@ const cmdRmv = addMultiUserOptions(
     .setRequired(false)
 );
 
-const commands = [cmdFmenu, cmdFamenu, cmdAdd, cmdRmv].map(c => c.toJSON());
+const cmdPermissions = new SlashCommandBuilder()
+  .setName("permissions")
+  .setDescription("Arată ce permisiuni ai în bot.")
+  .setDMPermission(false);
+
+const commands = [cmdFmenu, cmdFamenu, cmdAdd, cmdRmv, cmdPermissions].map(c => c.toJSON());
 
 const rest = new REST({ version: "10" }).setToken(token);
 
