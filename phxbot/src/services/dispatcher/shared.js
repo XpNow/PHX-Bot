@@ -182,7 +182,6 @@ function formatFetchMembersError(err) {
   const name = err?.name || "Error";
   const msg = String(err?.message || err).replace(/\s+/g, " ").trim();
 
-  // discord.js rate limit errors often include this shape
   const retryAfter = Number(
     err?.data?.retry_after ?? err?.retry_after ?? err?.retryAfter ?? 0
   );
@@ -195,7 +194,6 @@ function formatFetchMembersError(err) {
   if (opcode !== undefined) parts.push(`opcode: ${opcode}`);
   if (guildId) parts.push(`guild_id: ${guildId}`);
 
-  // Keep it short for Discord embeds
   return parts.join(" | ").slice(0, 900);
 }
 
