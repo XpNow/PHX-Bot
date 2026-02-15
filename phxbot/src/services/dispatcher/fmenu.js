@@ -159,20 +159,6 @@ function countOrgMembers(ctx, org) {
   return Math.max(dbCount, discordCount);
 }
 
-function randomLetters(len = 3) {
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-  let out = "";
-  for (let i = 0; i < len; i++) out += alphabet[Math.floor(Math.random() * alphabet.length)];
-  return out;
-}
-
-function generateTransferId(ctx) {
-  for (let i = 0; i < 20; i++) {
-    const candidate = randomLetters(3);
-    if (!repo.getTransferRequest(ctx.db, candidate)) return candidate;
-  }
-  return randomLetters(3);
-}
 
 function effectiveIllegalCap(org) {
   if (!org) return null;
