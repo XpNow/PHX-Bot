@@ -106,7 +106,6 @@ function parseRoleIdsRaw(raw) {
     .split(/[\s,]+/g)
     .map(s => s.replace(/[<@&#>]/g, "").trim())
     .filter(Boolean);
-  // de-dup + keep order
   const out = [];
   for (const id of ids) {
     if (!/^\d{5,25}$/.test(id)) continue;
@@ -443,7 +442,7 @@ async function famenuConfig(interaction, ctx) {
   if (!requireConfigManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar owner sau rolul de config poate modifica configurările.");
   const issues = configIssues(ctx);
   const desc = [
-    "Setează roluri si canale.",
+    "Faction Manager configuration.",
     issues.length ? `\n⚠️ Probleme detectate:\n- ${issues.join("\n- ")}` : "\n✅ Configurarea pare completă."
   ].join("\n");
   const emb = makeEmbed("Config", desc);
@@ -1499,6 +1498,27 @@ export async function handleFamenuComponent(interaction, ctx) {
 export async function handleFamenuModal(interaction, ctx) {
   const id = interaction.customId;
 
+  if (id === "famenu:orgroles_search_modal") {
+    if (!canManageOrgManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner/config.");
+    const q = String(interaction.fields.getTextInputValue("query") || "").trim();
+    const orgs = repo.listOrgs(ctx.db);
+    const byId = Number(q);
+    let hits = [];
+    if (Number.isFinite(byId) && byId > 0) {
+      const org = repo.getOrg(ctx.db, byId);
+      if (org) hits = [org];
+    } else {
+      const low = q.toLowerCase();
+      hits = orgs.filter(o => String(o.name || "").toLowerCase().includes(low));
+    }
+    if (!hits.length) return sendEphemeral(interaction, "Search org", "Nu am găsit organizații pentru query-ul dat.");
+
+    const options = hits.slice(0,25).map(o => ({ label: `${o.name}`.slice(0,100), value: String(o.id), description: `ID ${o.id} • ${humanKind(o.kind)}`.slice(0,100) }));
+    const menu = new StringSelectMenuBuilder().setCustomId("famenu:orgroles:pick:0").setPlaceholder("Selectează organizația").addOptions(options);
+    const rows = [new ActionRowBuilder().addComponents(menu), ...rowsFromButtons([btn("famenu:orgroles", "Back", ButtonStyle.Secondary, "⬅️")])];
+    return sendEphemeral(interaction, `Search rezultate (${hits.length})`, "Alege organizația dorită.", rows);
+  }
+
   if (id === "famenu:createorg") {
     if (!requireCreateOrg(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Nu ai permisiuni să creezi organizații.");
     const name = interaction.fields.getTextInputValue("name")?.trim();
@@ -1547,10 +1567,8 @@ export async function handleFamenuModal(interaction, ctx) {
     const raw = String(interaction.fields.getTextInputValue("role_id") || "").trim();
     const ids = parseRoleIdsRaw(raw);
 
-    // admin/supervisor/config pot avea multiple roluri; pk/ban doar 1
     const multiAllowed = (which === "admin" || which === "supervisor" || which === "config");
     if (!ids.length) {
-      // allow clearing
       setSetting(ctx.db, `${which}_role_id`, "");
       const map = { admin: "adminRole", supervisor: "supervisorRole", config: "configRole", pk: "pkRole", ban: "banRole" };
       const k = map[which];
@@ -1565,7 +1583,6 @@ export async function handleFamenuModal(interaction, ctx) {
       return sendEphemeral(interaction, "Eroare", "Pentru acest set accept doar UN singur rol.");
     }
 
-    // validate roles exist
     for (const rid of ids) {
       const chk = roleCheck(ctx, rid, "rol");
       if (!chk.ok) return sendEphemeral(interaction, "Eroare", `Role ID invalid: \`${rid}\``);

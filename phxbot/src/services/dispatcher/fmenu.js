@@ -1,4 +1,5 @@
 import { ActionRowBuilder, ButtonStyle, MessageFlags } from "discord.js";
+import crypto from "crypto";
 import * as repo from "../../db/repo.js";
 import { getSetting } from "../../db/db.js";
 import { hasRole, parseUserIds, humanKind } from "../../util/access.js";
@@ -10,6 +11,8 @@ import {
   PK_MS,
   DAY_MS,
   LEGAL_MIN_DAYS,
+  ORG_SWITCH_MS,
+  TRANSFER_MS,
   sendEphemeral,
   makeBrandedEmbed,
   audit,
@@ -134,6 +137,41 @@ function buildMembershipPickOptions(ctx, org) {
   }
 
   return options.slice(0, 25);
+}
+
+function effectiveIllegalCap(org) {
+  if (!org) return null;
+  if (String(org.kind).toUpperCase() !== "ILLEGAL") return null;
+  const cap = Number(org.member_cap);
+  return Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : 30;
+}
+
+function countOrgMembers(ctx, org) {
+  const dbCount = repo.listMembersByOrg(ctx.db, org.id).length;
+  const membershipRoleIds = parseOrgMembershipRoleIds(org);
+  const discordIds = new Set();
+  for (const rid of membershipRoleIds) {
+    const role = ctx.guild.roles.cache.get(rid);
+    if (!role) continue;
+    for (const m of role.members.values()) if (!m.user?.bot) discordIds.add(m.id);
+  }
+  const discordCount = discordIds.size;
+  return Math.max(dbCount, discordCount);
+}
+
+function randomLetters(len = 3) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  let out = "";
+  for (let i = 0; i < len; i++) out += alphabet[Math.floor(Math.random() * alphabet.length)];
+  return out;
+}
+
+function generateTransferId(ctx) {
+  for (let i = 0; i < 20; i++) {
+    const candidate = randomLetters(3);
+    if (!repo.getTransferRequest(ctx.db, candidate)) return candidate;
+  }
+  return randomLetters(3);
 }
 
 function effectiveIllegalCap(org) {
@@ -573,15 +611,12 @@ async function removeFromOrg(ctx, targetMember, orgId, byUserId, { skipOrgSwitch
     console.error(`[REMOVE] Org not found for orgId ${orgId}`);
     return { ok:false, msg:"Organizația nu există." };
   }
-// Safeguard: do NOT allow removing a Leader/Co-Leader directly.
-// They must be downgraded to MEMBER first via Set rank.
 const targetRank = getOrgRank(targetMember, org);
 if (!ctx.perms.staff && (targetRank === "LEADER" || targetRank === "COLEADER")) {
   const pretty = targetRank === "LEADER" ? "LEADER" : "CO-LEADER";
   return { ok:false, msg:`Userul are rank **${pretty}**. Retrogradează-l mai întâi la **MEMBER** din **Set rank**, apoi încearcă din nou.` };
 }
 
-// If staff removes directly, also cleanup leader/co-leader roles to avoid leftovers.
 if (ctx.perms.staff) {
   const leadershipRoleIds = [org.leader_role_id, org.co_leader_role_id].filter(Boolean);
   for (const rid of leadershipRoleIds) {
@@ -660,8 +695,6 @@ async function applyPk(ctx, targetMember, orgId, byUserId) {
     }
     const canManage = canManageTargetRank(ctx, org, targetMember);
     if (!canManage.ok) return { ok:false, msg: canManage.msg };
-// Safeguard: do NOT allow applying PK removal to a Leader/Co-Leader directly.
-// They must be downgraded to MEMBER first via Set rank.
 const targetRank = getOrgRank(targetMember, org);
 if (!ctx.perms.staff && (targetRank === "LEADER" || targetRank === "COLEADER")) {
   const pretty = targetRank === "LEADER" ? "LEADER" : "CO-LEADER";
