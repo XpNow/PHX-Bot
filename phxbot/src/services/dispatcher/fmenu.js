@@ -91,6 +91,73 @@ function noCooldownExempt(org, membership, type) {
 
 const ROSTER_CACHE_MS = 30 * 1000;
 const rosterCache = new Map();
+const pendingAddMembershipPick = new Map();
+const PENDING_ADD_PICK_TTL_MS = 5 * 60 * 1000;
+
+function randomLetters(len = 3) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  let out = "";
+  for (let i = 0; i < len; i++) out += alphabet[Math.floor(Math.random() * alphabet.length)];
+  return out;
+}
+
+function generateTransferId(ctx) {
+  for (let i = 0; i < 20; i++) {
+    const candidate = randomLetters(3);
+    if (!repo.getTransferRequest(ctx.db, candidate)) return candidate;
+  }
+  return randomLetters(3);
+}
+
+function generateAddPickToken() {
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function buildMembershipPickOptions(ctx, org) {
+  const baseId = String(org?.member_role_id || "").trim();
+  const extras = parseOrgMembershipRoleIds(org).filter(rid => rid !== baseId);
+  const options = [];
+
+  if (baseId) {
+    const baseRole = ctx.guild.roles.cache.get(baseId);
+    options.push({
+      label: "Membru (rol standard)",
+      value: baseId,
+      description: baseRole ? `@${baseRole.name}`.slice(0, 100) : `Rol lipsă: ${baseId}`.slice(0, 100)
+    });
+  }
+
+  for (const rid of extras) {
+    const role = ctx.guild.roles.cache.get(rid);
+    options.push({
+      label: role ? `Extra: ${role.name}`.slice(0, 100) : `Extra missing: ${rid}`.slice(0, 100),
+      value: rid,
+      description: `ID ${rid}`.slice(0, 100)
+    });
+  }
+
+  return options.slice(0, 25);
+}
+
+function effectiveIllegalCap(org) {
+  if (!org) return null;
+  if (String(org.kind).toUpperCase() !== "ILLEGAL") return null;
+  const cap = Number(org.member_cap);
+  return Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : 30;
+}
+
+function countOrgMembers(ctx, org) {
+  const dbCount = repo.listMembersByOrg(ctx.db, org.id).length;
+  const membershipRoleIds = parseOrgMembershipRoleIds(org);
+  const discordIds = new Set();
+  for (const rid of membershipRoleIds) {
+    const role = ctx.guild.roles.cache.get(rid);
+    if (!role) continue;
+    for (const m of role.members.values()) if (!m.user?.bot) discordIds.add(m.id);
+  }
+  const discordCount = discordIds.size;
+  return Math.max(dbCount, discordCount);
+}
 
 function randomLetters(len = 3) {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -446,7 +513,7 @@ function setRankWhitelistRemoveModal(orgId) {
 }
 
 
-async function addToOrg(ctx, targetMember, orgId, role) {
+async function addToOrg(ctx, targetMember, orgId, role, membershipRoleId = null) {
   return withUserLock(targetMember.id, async () => {  const org = repo.getOrg(ctx.db, orgId);
   if (!org) {
     console.error(`[ADD] Org not found for orgId ${orgId}`);
@@ -501,19 +568,42 @@ async function addToOrg(ctx, targetMember, orgId, role) {
   if (ctx.settings.pkRole) await safeRoleRemove(targetMember, ctx.settings.pkRole, `Cleanup PK for ${targetMember.id}`);
   if (ctx.settings.banRole) await safeRoleRemove(targetMember, ctx.settings.banRole, `Cleanup BAN for ${targetMember.id}`);
 
-  const orgRoleCheck = roleCheck(ctx, org.member_role_id, "membru");
+  const membershipRoleIds = parseOrgMembershipRoleIds(org);
+  if (!membershipRoleIds.length) return { ok:false, msg:"Organizația nu are roluri de membership configurate." };
+
+  const selectedMembershipRoleId = String(membershipRoleId || org.member_role_id || "").trim();
+  if (!selectedMembershipRoleId || !membershipRoleIds.includes(selectedMembershipRoleId)) {
+    return { ok:false, msg:"Rolul de membership selectat nu aparține organizației." };
+  }
+
+  const selectedRole = ctx.guild.roles.cache.get(selectedMembershipRoleId);
+  if (!selectedRole) return { ok:false, msg:"Rolul selectat nu există pe Discord." };
+
+  const orgRoleCheck = roleCheck(ctx, selectedMembershipRoleId, "membru");
   if (!orgRoleCheck.ok) return { ok:false, msg: orgRoleCheck.msg };
-  const added = await safeRoleAdd(targetMember, org.member_role_id, `Add org role for ${targetMember.id}`);
+
+  for (const rid of membershipRoleIds) {
+    if (rid === selectedMembershipRoleId) continue;
+    if (!targetMember.roles.cache.has(rid)) continue;
+    const chk = roleCheck(ctx, rid, "membru");
+    if (!chk.ok) return { ok:false, msg: chk.msg };
+    const removed = await safeRoleRemove(targetMember, rid, `Normalize org membership role ${rid} for ${targetMember.id}`);
+    if (!removed) return { ok:false, msg:"Nu pot normaliza rolurile de membership existente." };
+  }
+
+  const added = await safeRoleAdd(targetMember, selectedMembershipRoleId, `Add org membership role ${selectedMembershipRoleId} for ${targetMember.id}`);
   if (!added) return { ok:false, msg:"Nu pot adăuga rolul organizației (permisiuni lipsă)." };
   repo.upsertMembership(ctx.db, targetMember.id, orgId, role || "MEMBER");
   await audit(ctx, "➕ Membru adăugat", [
     `**Țintă:** <@${targetMember.id}> (\`${targetMember.id}\`)`,
     `**Organizație:** **${org.name}** (\`${orgId}\`)`,
+    `**Rol membership:** <@&${selectedMembershipRoleId}>`,
     `**De către:** <@${ctx.uid}>`
   ].join("\n"), COLORS.SUCCESS);
   return { ok:true };
   });
 }
+
 
 async function removeFromOrg(ctx, targetMember, orgId, byUserId, { skipOrgSwitch = false } = {}) {
   return withUserLock(targetMember.id, async () => {  const org = repo.getOrg(ctx.db, orgId);
@@ -1493,6 +1583,43 @@ export async function handleFmenuComponent(interaction, ctx) {
       const orgId = Number(interaction.values[0]);
       return orgPanelView(interaction, ctx, orgId);
     }
+    if (id.startsWith("fmenu:addpick:")) {
+      const token = id.split(":")[2] || "";
+      const pending = pendingAddMembershipPick.get(token);
+      if (!pending) return sendEphemeral(interaction, "Eroare", "Sesiunea de selectare a expirat. Reia Add membri.");
+      if (pending.byUid !== ctx.uid) return sendEphemeral(interaction, "⛔ Acces refuzat", "Această selecție nu îți aparține.");
+      if ((Date.now() - pending.createdAt) > PENDING_ADD_PICK_TTL_MS) {
+        pendingAddMembershipPick.delete(token);
+        return sendEphemeral(interaction, "Eroare", "Sesiunea de selectare a expirat. Reia Add membri.");
+      }
+
+      pendingAddMembershipPick.delete(token);
+      const selectedRoleId = String(interaction.values?.[0] || "").trim();
+      if (!selectedRoleId) return sendEphemeral(interaction, "Eroare", "Rol de membership invalid.");
+
+      const org = repo.getOrg(ctx.db, pending.orgId);
+      if (!org) return sendEphemeral(interaction, "Eroare", "Organizația nu mai există.");
+      const allowedRoles = parseOrgMembershipRoleIds(org);
+      if (!allowedRoles.includes(selectedRoleId)) {
+        return sendEphemeral(interaction, "Eroare", "Rolul selectat nu este valid pentru această organizație.");
+      }
+      if (!ctx.guild.roles.cache.has(selectedRoleId)) {
+        return sendEphemeral(interaction, "Eroare", "Rolul selectat nu există pe Discord.");
+      }
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      let ok = 0, bad = 0;
+      const errors = [];
+      for (const uid of pending.users) {
+        const m = await ctx.guild.members.fetch(uid).catch(() => null);
+        if (!m) { bad++; errors.push("Nu pot găsi userul în guild."); continue; }
+        const res = await addToOrg(ctx, m, pending.orgId, "MEMBER", selectedRoleId);
+        if (res.ok) ok++;
+        else { bad++; if (res.msg) errors.push(res.msg); }
+      }
+      const note = bad > 0 && errors.length ? `\nMotiv principal: ${errors[0]}` : "";
+      return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Rezultat", `Adăugați: **${ok}** | Eșuați: **${bad}**${note}`)] });
+    }
     return;
   }
 
@@ -1504,6 +1631,13 @@ export async function handleFmenuComponent(interaction, ctx) {
   }
 
   if (id === "fmenu:back") return fmenuHome(interaction, ctx);
+
+  if (id.startsWith("fmenu:addpick_cancel:")) {
+    const token = id.split(":")[2] || "";
+    const pending = pendingAddMembershipPick.get(token);
+    if (pending && pending.byUid === ctx.uid) pendingAddMembershipPick.delete(token);
+    return sendEphemeral(interaction, "Anulat", "Selectarea rolului de membership a fost anulată.");
+  }
 
   if (id.startsWith("org:")) {
     const parts = id.split(":");
@@ -1551,6 +1685,28 @@ export async function handleFmenuModal(interaction, ctx) {
     const orgId = Number(id.split(":")[1]);
     const users = parseUserIds(interaction.fields.getTextInputValue("users"));
     if (!users.length) return sendEphemeral(interaction, "Eroare", "Nu am găsit User ID-uri valide.");
+
+    const org = repo.getOrg(ctx.db, orgId);
+    if (!org) return sendEphemeral(interaction, "Eroare", "Organizația nu există.");
+
+    const membershipRoleIds = parseOrgMembershipRoleIds(org);
+    const hasExtraMembershipRoles = membershipRoleIds.filter(rid => rid !== String(org.member_role_id || "")).length > 0;
+
+    if (hasExtraMembershipRoles) {
+      const options = buildMembershipPickOptions(ctx, org);
+      if (!options.length) return sendEphemeral(interaction, "Eroare", "Nu există roluri de membership valide pentru această organizație.");
+
+      const token = generateAddPickToken();
+      pendingAddMembershipPick.set(token, { orgId, users, byUid: ctx.uid, createdAt: Date.now() });
+
+      const menu = select(`fmenu:addpick:${token}`, "Alege rolul de intrare", options);
+      const rows = [
+        new ActionRowBuilder().addComponents(menu),
+        ...rowsFromButtons([btn(`fmenu:addpick_cancel:${token}`, "Cancel", ButtonStyle.Secondary, "⬅️")])
+      ];
+      return sendEphemeral(interaction, "Alege rolul de intrare", "Selectează rolul de membership care va fi aplicat pentru toți userii din listă.", rows);
+    }
+
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     let ok = 0, bad = 0;
@@ -1561,7 +1717,7 @@ export async function handleFmenuModal(interaction, ctx) {
         return null;
       });
       if (!m) { bad++; errors.push("Nu pot găsi userul în guild."); continue; }
-      const res = await addToOrg(ctx, m, orgId, "MEMBER");
+      const res = await addToOrg(ctx, m, orgId, "MEMBER", String(org.member_role_id || ""));
       if (res.ok) ok++;
       else {
         bad++;
@@ -1571,6 +1727,7 @@ export async function handleFmenuModal(interaction, ctx) {
     const note = bad > 0 && errors.length ? `\nMotiv principal: ${errors[0]}` : "";
     return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Rezultat", `Adăugați: **${ok}** | Eșuați: **${bad}**${note}`)] });
   }
+
 
   if (id.endsWith(":remove_modal") || id.endsWith(":remove_pk_modal")) {
     const parts = id.split(":");
