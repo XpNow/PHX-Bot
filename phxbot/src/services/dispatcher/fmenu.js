@@ -159,27 +159,6 @@ function countOrgMembers(ctx, org) {
   return Math.max(dbCount, discordCount);
 }
 
-
-function effectiveIllegalCap(org) {
-  if (!org) return null;
-  if (String(org.kind).toUpperCase() !== "ILLEGAL") return null;
-  const cap = Number(org.member_cap);
-  return Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : 30;
-}
-
-function countOrgMembers(ctx, org) {
-  const dbCount = repo.listMembersByOrg(ctx.db, org.id).length;
-  const membershipRoleIds = parseOrgMembershipRoleIds(org);
-  const discordIds = new Set();
-  for (const rid of membershipRoleIds) {
-    const role = ctx.guild.roles.cache.get(rid);
-    if (!role) continue;
-    for (const m of role.members.values()) if (!m.user?.bot) discordIds.add(m.id);
-  }
-  const discordCount = discordIds.size;
-  return Math.max(dbCount, discordCount);
-}
-
 function resolveManageableOrgs(ctx) {
   const orgs = repo.listOrgs(ctx.db);
   const manageable = [];
